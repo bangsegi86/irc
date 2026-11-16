@@ -10,7 +10,7 @@
   <!-- 로그인 -->
   <section id="login" class="center" hidden>
     <form id="loginForm" class="card">
-      <h1>사랑방</h1>
+      <div class="brand"><span class="logo" aria-hidden="true"></span><h1>사랑방</h1></div>
       <label>서버 주소<input id="fUrl" placeholder="ws://192.168.0.10:7070" required></label>
       <label>닉네임<input id="fNick" maxlength="20" required></label>
       <label>비밀번호<input id="fPass" type="password" required></label>
@@ -26,27 +26,37 @@
   <!-- 채팅 -->
   <section id="app" hidden>
     <aside id="sidebar">
-      <header><strong id="meNick"></strong><button id="btnLogout" title="로그아웃">나가기</button></header>
-      <div id="invites"></div>
-      <h2>알림 <span id="noticeCount" class="badge" hidden></span><span class="actions"><button id="btnNoticeClear" hidden>모두 지우기</button></span></h2>
-      <ul id="noticeList"></ul>
-      <h2>채팅방 <span class="actions"><button id="btnBrowse" title="공개 방 찾기">찾기</button><button id="btnCreate" title="방 만들기">＋</button></span></h2>
-      <ul id="roomList"></ul>
-      <h2>사람들 <small>(누르면 1:1 창)</small></h2>
-      <ul id="userList"></ul>
+      <header class="brand"><span class="logo" aria-hidden="true"></span><strong>사랑방</strong></header>
+      <div class="scroll">
+        <div id="invites"></div>
+        <h2>알림 <span id="noticeCount" class="badge" hidden></span><span class="actions"><button id="btnNoticeClear" class="ghost" hidden>모두 지우기</button></span></h2>
+        <ul id="noticeList"></ul>
+        <h2>채팅방 <span class="actions"><button id="btnBrowse" class="ghost" title="공개 방 찾기">찾기</button><button id="btnCreate" class="ghost iconBtn" title="방 만들기" aria-label="방 만들기"><svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></button></span></h2>
+        <ul id="roomList"></ul>
+        <h2>1:1 대화 <small>(누르면 별도 창)</small></h2>
+        <ul id="userList"></ul>
+      </div>
+      <footer id="meBar">
+        <span id="meAvatar"></span>
+        <span class="meText"><strong id="meNick"></strong><small>접속 중</small></span>
+        <button id="btnTheme" class="ghost" title="화면 밝기 바꾸기 (시스템 설정 따르기 → 밝게 → 어둡게)">시스템</button>
+        <button id="btnLogout" class="ghost" title="로그아웃">나가기</button>
+      </footer>
     </aside>
 
     <main>
       <div id="banner" hidden>서버 연결이 끊겼습니다. 다시 연결하는 중…</div>
       <header id="chatHeader">
+        <span id="chatIcon"></span>
         <strong id="chatTitle">방을 선택하세요</strong>
+        <span id="chatSub"></span>
         <span class="actions">
           <button id="btnInvite" hidden>초대</button>
           <button id="btnLeave" hidden>방 나가기</button>
         </span>
       </header>
       <div id="messages"></div>
-      <div id="replyBar" hidden><span id="replyText"></span><button id="btnReplyCancel">✕</button></div>
+      <div id="replyBar" hidden><span id="replyText"></span><button id="btnReplyCancel" class="ghost" aria-label="답글 취소">✕</button></div>
       <form id="composer" hidden>
         <div id="toolbar">
           <button type="button" class="fmt" data-cmd="bold" title="굵게 (Ctrl+B)"><b>가</b></button>
@@ -54,32 +64,31 @@
           <button type="button" class="fmt" data-cmd="underline" title="밑줄 (Ctrl+U)"><u>가</u></button>
           <button type="button" class="fmt" data-cmd="strikeThrough" title="취소선"><s>가</s></button>
           <span class="sep fmt"></span>
-          <button type="button" class="fmt bg-yellow" data-bg="yellow" title="배경색: 노랑">가</button>
-          <button type="button" class="fmt bg-green" data-bg="green" title="배경색: 초록">가</button>
-          <button type="button" class="fmt bg-pink" data-bg="pink" title="배경색: 분홍">가</button>
-          <button type="button" class="fmt bg-blue" data-bg="blue" title="배경색: 파랑">가</button>
-          <button type="button" class="fmt" data-bg="" title="배경색 없애기">⌫</button>
+          <button type="button" class="fmt swatch bg-yellow" data-bg="yellow" title="배경색: 노랑" aria-label="배경색 노랑"></button>
+          <button type="button" class="fmt swatch bg-green" data-bg="green" title="배경색: 초록" aria-label="배경색 초록"></button>
+          <button type="button" class="fmt swatch bg-pink" data-bg="pink" title="배경색: 분홍" aria-label="배경색 분홍"></button>
+          <button type="button" class="fmt swatch bg-blue" data-bg="blue" title="배경색: 파랑" aria-label="배경색 파랑"></button>
+          <button type="button" class="fmt swatch none" data-bg="" title="배경색 없애기" aria-label="배경색 없애기"></button>
           <span class="sep fmt"></span>
           <button type="button" class="fmt sz-s" data-size="s" title="작게">가</button>
           <button type="button" class="fmt sz-l" data-size="l" title="크게">가</button>
           <button type="button" class="fmt sz-xl" data-size="xl" title="아주 크게">가</button>
           <span class="sep fmt"></span>
-          <button type="button" class="fmt" id="btnClearFmt" title="선택한 글자의 서식 지우기">서식 지우기</button>
+          <button type="button" class="fmt" id="btnClearFmt" title="선택한 글자의 서식 지우기">서식 지움</button>
           <span class="grow"></span>
           <select id="codeLang" hidden title="코드 언어"></select>
           <button type="button" id="btnCode" title="코드·쿼리 블록 넣기 / 블록에서 나오기">&lt;/&gt; 코드</button>
         </div>
         <div id="composeRow">
-          <button type="button" id="btnAttach" title="파일·이미지 보내기">📎</button>
+          <button type="button" id="btnAttach" class="ghost iconBtn big" title="파일·이미지 보내기" aria-label="파일·이미지 보내기"><svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11.5 12 19.5a5 5 0 0 1-7-7l8.5-8.5a3.3 3.3 0 0 1 4.7 4.7L9.8 17.1a1.7 1.7 0 0 1-2.4-2.4L15 7"/></svg></button>
           <div id="input" contenteditable="true" spellcheck="false" data-placeholder="메시지 입력 (@닉네임으로 호출)" title="Enter 전송, Shift+Enter 줄바꿈"></div>
-          <button type="submit" class="primary">보내기</button>
+          <button type="submit" id="btnSend" class="primary iconBtn big" title="보내기 (Enter)" aria-label="보내기"><svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12 20 4l-6 16-3-7z"/></svg></button>
         </div>
         <div id="composeHint"></div>
       </form>
     </main>
 
     <aside id="members" hidden>
-      <h2>구성원</h2>
       <ul id="memberList"></ul>
     </aside>
   </section>

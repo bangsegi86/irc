@@ -31,6 +31,31 @@ function el(tag, props = {}, ...children) {
   node.append(...children.filter((c) => c != null));
   return node;
 }
+// 선으로 그린 아이콘(고정된 그림만 넣는다 — 사용자 입력은 여기로 오지 않는다)
+const ICONS = {
+  hash: '<path d="M5 9h14M5 15h14M10 4 8 20M16 4l-2 16"/>',
+  lock: '<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
+  bell: '<path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15z"/><path d="M10 20a2 2 0 0 0 4 0"/>',
+  chat: '<path d="M4 5h16v11H9l-5 4z"/>',
+  user: '<circle cx="12" cy="8" r="4"/><path d="M4 20a8 8 0 0 1 16 0"/>',
+  reply: '<path d="M9 7 4 12l5 5"/><path d="M4 12h10a6 6 0 0 1 6 6v1"/>',
+  file: '<path d="M7 3h7l5 5v13H7z"/><path d="M14 3v5h5"/>',
+  image: '<rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="m4 18 5.5-5 4 3.5 2.5-2L20 18"/>',
+};
+function icon(name, size = 18) {
+  const span = el('span', { className: 'ic' });
+  span.innerHTML = `<svg aria-hidden="true" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${ICONS[name]}</svg>`;
+  return span;
+}
+// 이름 첫 글자를 넣은 동그란 프로필. 색은 사용자마다 고정
+const AVATAR_COLORS = ['#3b6fb5', '#a8562b', '#7a56b8', '#2a7f63', '#a8437a', '#74661c'];
+function avatar(user, size = 38) {
+  const node = el('div', { className: 'av' }, [...user.nick][0] || '?');
+  node.setAttribute('aria-hidden', 'true');
+  Object.assign(node.style, { width: `${size}px`, height: `${size}px`, fontSize: `${Math.round(size * 0.42)}px`, background: AVATAR_COLORS[user.id % AVATAR_COLORS.length] });
+  return node;
+}
+const fmtClock = (ts) => new Date(ts).toLocaleTimeString('ko-KR', { hour: 'numeric', minute: '2-digit' });
 const fmtSize = (n) => (n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : n < 1073741824 ? `${(n / 1048576).toFixed(1)} MB` : `${(n / 1073741824).toFixed(2)} GB`);
 const fmtTime = (ts) => new Date(ts).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 const keyOf = (c) => `${c.type}:${c.id}`;
@@ -227,12 +252,15 @@ function clearNotices() {
 }
 
 function renderSidebar() {
+  $('meAvatar').replaceChildren(avatar(state.me, 32));
   $('noticeCount').hidden = $('btnNoticeClear').hidden = !state.notices.length;
   $('noticeCount').textContent = String(state.notices.length);
   $('noticeList').replaceChildren(...(state.notices.length ? state.notices.map((n) => el('li', { className: 'notice', title: '눌러서 이동', onclick: () => gotoNotice(n) },
-    el('div', { className: 'who' }, el('b', {}, `🔔 ${n.from.nick}${n.roomName ? ` · ${n.roomName}` : ''}`)),
-    el('div', { className: 'what' }, noticeText(n)),
-    el('div', { className: 'when' }, fmtTime(n.ts)))) : [el('li', { className: 'none' }, '새 알림이 없습니다.')]));
+    el('span', { className: 'nIcon' }, icon('bell')),
+    el('div', { className: 'nBody' },
+      el('div', { className: 'who' }, `${n.from.nick}${n.roomName ? ` · ${n.roomName}` : ''}`),
+      el('div', { className: 'what' }, noticeText(n)),
+      el('div', { className: 'when' }, fmtTime(n.ts))))) : [el('li', { className: 'none' }, '새 알림이 없습니다.')]));
 
   $('invites').replaceChildren(...state.invites.map((inv) => el('div', { className: 'invite' },
     el('div', {}, `${inv.from} 님이 '${inv.roomName}' 방에 초대했습니다.`),
@@ -243,16 +271,16 @@ function renderSidebar() {
   $('roomList').replaceChildren(...[...state.rooms.values()].sort((a, b) => a.name.localeCompare(b.name, 'ko')).map((r) => {
     const n = state.unread.get(`room:${r.id}`);
     const active = state.current?.type === 'room' && state.current.id === r.id;
-    return el('li', { className: active ? 'active' : '', onclick: () => openView({ type: 'room', id: r.id }) },
-      el('span', {}, r.isPublic ? '#' : '🔒'), el('span', { className: 'name' }, r.name), n ? el('span', { className: 'badge' }, String(n)) : null);
+    return el('li', { className: `${active ? 'active' : ''} ${n ? 'unread' : ''}`, title: r.isPublic ? '공개 방' : '비공개 방', onclick: () => openView({ type: 'room', id: r.id }) },
+      icon(r.isPublic ? 'hash' : 'lock'), el('span', { className: 'name' }, r.name), n ? el('span', { className: 'badge' }, String(n)) : null);
   }));
 
   const others = [...state.users.values()].filter((u) => u.id !== state.me.id)
     .sort((a, b) => (b.online - a.online) || a.nick.localeCompare(b.nick, 'ko'));
   $('userList').replaceChildren(...others.map((u) => {
     const n = state.unread.get(`dm:${u.id}`);
-    return el('li', { onclick: () => openDm(u) },
-      el('span', { className: `dot ${u.online ? 'on' : ''}` }), el('span', { className: 'name' }, u.nick), n ? el('span', { className: 'badge' }, String(n)) : null);
+    return el('li', { className: `${u.online ? 'online' : ''} ${n ? 'unread' : ''}`, onclick: () => openDm(u) },
+      avatar(u, 28), el('span', { className: 'name' }, u.nick), n ? el('span', { className: 'badge' }, String(n)) : null, el('span', { className: `dot ${u.online ? 'on' : ''}`, title: u.online ? '접속 중' : '자리 비움' }));
   }));
 }
 
@@ -275,11 +303,16 @@ function renderMembers() {
   const room = state.current?.type === 'room' ? state.rooms.get(state.current.id) : null;
   $('members').hidden = !room;
   if (!room) return;
-  $('memberList').replaceChildren(...room.members.map((m) => el('li', {},
-    el('span', { className: `dot ${m.online ? 'on' : ''}` }),
-    el('span', { className: 'name' }, m.nick + (m.id === room.ownerId ? ' 👑' : '')),
-    m.id !== state.me.id ? el('button', { title: '호출', onclick: () => callUser(m, room) }, '🔔') : null,
-    m.id !== state.me.id ? el('button', { title: '1:1 대화', onclick: () => openDm(m) }, '💬') : null)));
+  $('chatSub').textContent = `구성원 ${room.members.length}명`;
+  const row = (m) => el('li', { className: `member ${m.online ? 'online' : ''}` },
+    avatar(m, 30),
+    el('span', { className: 'name' }, m.nick, m.id === room.ownerId ? el('small', {}, ' 방장') : null),
+    m.id !== state.me.id ? el('button', { className: 'ghost iconBtn', title: '호출', ariaLabel: `${m.nick} 호출`, onclick: () => callUser(m, room) }, icon('bell', 16)) : null,
+    m.id !== state.me.id ? el('button', { className: 'ghost iconBtn', title: '1:1 대화', ariaLabel: `${m.nick} 님과 1:1 대화`, onclick: () => openDm(m) }, icon('chat', 16)) : null);
+  const on = room.members.filter((m) => m.online), off = room.members.filter((m) => !m.online);
+  $('memberList').replaceChildren(
+    ...(on.length ? [el('li', { className: 'group' }, `접속 중 — ${on.length}`), ...on.map(row)] : []),
+    ...(off.length ? [el('li', { className: 'group' }, `자리 비움 — ${off.length}`), ...off.map(row)] : []));
 }
 
 async function callUser(m, room) {
@@ -293,6 +326,8 @@ async function callUser(m, room) {
 function showNoRoom() {
   state.current = null;
   $('chatTitle').textContent = '방을 선택하세요';
+  $('chatSub').textContent = '';
+  $('chatIcon').replaceChildren();
   $('btnInvite').hidden = $('btnLeave').hidden = $('composer').hidden = true;
   $('members').hidden = true;
   $('messages').replaceChildren(el('p', { className: 'empty' }, "참여 중인 방이 없습니다. 왼쪽의 '＋'로 방을 만들거나 '찾기'로 공개 방에 들어가 보세요."));
@@ -305,6 +340,8 @@ async function openView(view) {
   setReply(null);
   const isRoom = view.type === 'room';
   $('chatTitle').textContent = isRoom ? state.rooms.get(view.id)?.name ?? '' : `${view.nick} 님과 1:1 대화`;
+  $('chatSub').textContent = '';
+  $('chatIcon').replaceChildren(icon(isRoom ? (state.rooms.get(view.id)?.isPublic ? 'hash' : 'lock') : 'user'));
   if (DM_MODE) document.title = `${view.nick} — 1:1 대화`;
   $('btnInvite').hidden = $('btnLeave').hidden = !isRoom;
   $('composer').hidden = false;
@@ -331,11 +368,26 @@ async function loadHistory() {
   if (res.messages.length === PAGE) {
     box.prepend(el('p', { className: 'empty more' }, el('button', { onclick: loadHistory }, '이전 대화 더 보기')));
   }
+  fixDays();
   box.scrollTop += box.scrollHeight - before;
 }
 
 const scrollToBottom = () => { $('messages').scrollTop = $('messages').scrollHeight; };
-const appendMessage = (msg) => $('messages').append(buildMessage(msg));
+const appendMessage = (msg) => { $('messages').append(buildMessage(msg)); fixDays(); };
+
+// 날짜가 바뀌는 자리에 날짜 구분선을 다시 놓는다
+function fixDays() {
+  const box = $('messages');
+  box.querySelectorAll('.day').forEach((n) => n.remove());
+  let last = null;
+  for (const m of box.querySelectorAll('.msg')) {
+    const d = new Date(Number(m.dataset.ts));
+    if (d.toDateString() !== last) {
+      last = d.toDateString();
+      m.before(el('div', { className: 'day' }, d.toLocaleDateString('ko-KR', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'short' })));
+    }
+  }
+}
 
 function flashMessage(id) {
   const node = document.querySelector(`[data-msg="${id}"]`);
@@ -351,21 +403,25 @@ function textNodes(text) {
 }
 
 function buildMessage(msg) {
-  const node = el('div', { className: `msg ${msg.from.id === state.me.id ? 'mine' : ''}` });
+  const mine = msg.from.id === state.me.id;
+  const called = !mine && (msg.text || '').toLowerCase().split(/[\s]+/).some((w) => w.startsWith(`@${state.me.nick.toLowerCase()}`));
+  const node = el('div', { className: `msg ${mine ? 'mine' : ''} ${called ? 'called' : ''}` });
   node.dataset.msg = msg.id;
-  node.append(el('div', { className: 'head' }, el('span', { className: 'nick' }, msg.from.nick), el('span', { className: 'time' }, fmtTime(msg.ts))));
+  node.dataset.ts = msg.ts;
+  const body = el('div', { className: 'body' });
+  body.append(el('div', { className: 'head' }, el('span', { className: 'nick' }, msg.from.nick), el('span', { className: 'time', title: fmtTime(msg.ts) }, fmtClock(msg.ts))));
   if (msg.replyTo) {
-    node.append(el('div', { className: 'quote', title: '원문으로 이동', onclick: () => flashMessage(msg.replyTo.id) }, `↪ ${msg.replyTo.nick}: ${msg.replyTo.text}`));
+    body.append(el('div', { className: 'quote', title: '원문으로 이동', onclick: () => flashMessage(msg.replyTo.id) }, icon('reply', 14), el('span', { className: 'qt' }, el('b', {}, msg.replyTo.nick), ` ${msg.replyTo.text}`)));
   }
-  if (msg.rich) node.append(Editor.renderRich(msg.rich, textNodes));
-  else if (msg.text) node.append(el('div', { className: 'text' }, ...textNodes(msg.text)));
+  if (msg.rich) body.append(Editor.renderRich(msg.rich, textNodes));
+  else if (msg.text) body.append(el('div', { className: 'text' }, ...textNodes(msg.text)));
   if (msg.file) {
     const box = el('div', { className: 'file' });
     state.fileBoxes.set(msg.id, box);
-    node.append(box);
+    body.append(box);
     renderFile(msg, box, true);
   }
-  node.append(el('button', { className: 'replyBtn', onclick: () => setReply(msg) }, '답글'));
+  node.append(avatar(msg.from), body, el('button', { className: 'replyBtn', onclick: () => setReply(msg) }, '답글'));
   return node;
 }
 
@@ -409,7 +465,7 @@ async function renderFile(msg, box, allowAuto) {
   const mine = msg.from.id === state.me.id;
   const isImage = f.mime.startsWith('image/');
   const local = await window.api.localFile(f.fileId);
-  const label = el('div', { className: 'fname' }, `${isImage ? '🖼' : '📄'} ${f.name} `, el('small', {}, fmtSize(f.size)));
+  const label = el('div', { className: 'fname' }, icon(isImage ? 'image' : 'file', 20), el('span', {}, f.name), el('small', {}, fmtSize(f.size)));
   const status = el('div', { className: 'status' });
 
   if (local) {
@@ -723,6 +779,11 @@ function wire() {
   $('btnLeave').onclick = leaveRoom;
   $('btnReplyCancel').onclick = () => setReply(null);
   $('btnNoticeClear').onclick = clearNotices;
+  // 화면 밝기: 시스템 설정 따르기 → 밝게 → 어둡게 순으로 바뀐다
+  const THEMES = { system: '시스템', light: '밝게', dark: '어둡게' };
+  const showTheme = (t) => { $('btnTheme').textContent = THEMES[t] || THEMES.system; };
+  window.api.getTheme().then(showTheme);
+  $('btnTheme').onclick = async () => { const order = Object.keys(THEMES); showTheme(await window.api.setTheme(order[(order.indexOf(await window.api.getTheme()) + 1) % order.length])); };
   if (!DM_MODE) window.api.onGoto(({ noticeId }) => { const n = state.notices.find((x) => x.id === noticeId); if (n) gotoNotice(n); });
   $('modalCancel').onclick = closeModal;
   $('btnAttach').onclick = async () => sendFiles(await window.api.pickFiles());
