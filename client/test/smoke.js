@@ -75,7 +75,7 @@ async function run() {
   await js(win, `btnInvite.click(); document.querySelector('#modalBody input').value=${JSON.stringify(peerNick)}; modalOk.click()`);
   const { invite } = await b.next('invite');
   const { room } = await b.req('invite.accept', { inviteId: invite.id });
-  await until(() => js(win, `document.querySelectorAll('#memberList li').length === 2`), '구성원 2명 표시');
+  await until(() => js(win, `document.querySelectorAll('#memberList li.member').length === 2`), '구성원 2명 표시');
 
   // 4. 상대의 메시지(@호출 포함) → 답글
   step('4');
@@ -171,6 +171,17 @@ async function run() {
   assert.equal(await js(win, `document.querySelectorAll('#messages img').length + (window.hacked ? 100 : 0)`), 0, '태그가 실행되면 안 됨');
   await until(() => js(win, `!!document.querySelector('.msg .code .tok-key')`), 'JSON 색 입힘');
   assert.equal(await js(win, `document.querySelectorAll('#toolbar [data-size].on').length`), 0, '빈 입력란에서는 크기 버튼이 눌린 상태가 아니어야 함');
+  // 4-5. 화면 밝기: 어둡게/밝게 전환이 모든 창에 적용되고, 다시 켜도 유지되도록 저장된다
+  step('4-5');
+  for (const [theme, bg] of [['dark', 'rgb(39, 42, 49)'], ['light', 'rgb(255, 255, 255)']]) {
+    assert.equal(await js(win, `window.api.setTheme('${theme}')`), theme);
+    await until(() => js(win, `getComputedStyle(document.body).backgroundColor === '${bg}'`), `${theme} 모드 색 적용`);
+    await sleep(150);
+    await shot(win, `theme-${theme}.png`);
+  }
+  assert.equal(JSON.parse(fs.readFileSync(path.join(tmp, 'user', 'settings.json'), 'utf8')).theme, 'light');
+  await js(win, `btnTheme.click()`);
+  await until(() => js(win, `btnTheme.textContent === '어둡게'`), '밝기 버튼으로 전환');
   await shot(win, 'rich.png');
 
   // 5. 파일 보내기(클라이언트 → 상대)

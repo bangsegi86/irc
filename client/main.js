@@ -1,5 +1,5 @@
 // 사랑방 클라이언트 메인 프로세스: 창·트레이·알림 팝업 관리, 파일 읽기/쓰기
-const { app, BrowserWindow, ipcMain, dialog, shell, Tray, Menu, nativeImage, screen, clipboard } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, Tray, Menu, nativeImage, screen, clipboard, nativeTheme } = require('electron');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
@@ -25,6 +25,16 @@ const mapPath = () => path.join(app.getPath('userData'), 'files.json');
 let fileMap = {};
 function loadFileMap() { try { fileMap = JSON.parse(fs.readFileSync(mapPath(), 'utf8')); } catch { fileMap = {}; } }
 function saveFileMap() { fs.writeFileSync(mapPath(), JSON.stringify(fileMap)); }
+
+// 화면 밝기 설정: system(윈도우 설정 따르기) | light | dark. 모든 창(주 창·1:1 창·알림 팝업)에 함께 적용된다
+const settingsPath = () => path.join(app.getPath('userData'), 'settings.json');
+function loadTheme() { try { const t = JSON.parse(fs.readFileSync(settingsPath(), 'utf8')).theme; return ['system', 'light', 'dark'].includes(t) ? t : 'system'; } catch { return 'system'; } }
+function setTheme(theme) {
+  const t = ['system', 'light', 'dark'].includes(theme) ? theme : 'system';
+  nativeTheme.themeSource = t;
+  try { fs.writeFileSync(settingsPath(), JSON.stringify({ theme: t })); } catch { /* 저장 실패는 무시 */ }
+  return t;
+}
 
 const MIME = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp' };
 const mimeOf = (name) => MIME[path.extname(name).slice(1).toLowerCase()] || 'application/octet-stream';
@@ -115,6 +125,7 @@ function createTray() {
 
 function setup() {
   loadFileMap();
+  nativeTheme.themeSource = loadTheme();
   app.setAppUserModelId('kr.sarangbang.client');
   createTray();
   mainWindow = createWindow({}, { title: '사랑방' });
@@ -207,6 +218,8 @@ function setup() {
     await fsp.unlink(s.path).catch(() => {});
   });
 
+  ipcMain.handle('theme:get', () => nativeTheme.themeSource);
+  ipcMain.handle('theme:set', (_e, theme) => setTheme(theme));
   ipcMain.handle('clipboard:write', (_e, text) => clipboard.writeText(String(text)));
   ipcMain.handle('file:open', (_e, fileId) => fileMap[fileId] && shell.openPath(fileMap[fileId]));
   ipcMain.handle('file:show', (_e, fileId) => fileMap[fileId] && shell.showItemInFolder(fileMap[fileId]));
