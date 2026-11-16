@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' file: data:; connect-src ws: wss:; style-src 'self'">
+  <title>사랑방</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- 로그인 -->
+  <section id="login" class="center" hidden>
+    <form id="loginForm" class="card">
+      <h1>사랑방</h1>
+      <label>서버 주소<input id="fUrl" placeholder="ws://192.168.0.10:7070" required></label>
+      <label>닉네임<input id="fNick" maxlength="20" required></label>
+      <label>비밀번호<input id="fPass" type="password" required></label>
+      <label>서버 접속 암호 <small>(가입할 때만, 서버에 설정된 경우)</small><input id="fServerPass" type="password"></label>
+      <p id="loginError" class="error"></p>
+      <div class="row">
+        <button type="submit" class="primary">로그인</button>
+        <button type="button" id="btnRegister">새로 가입</button>
+      </div>
+    </form>
+  </section>
+
+  <!-- 채팅 -->
+  <section id="app" hidden>
+    <aside id="sidebar">
+      <header><strong id="meNick"></strong><button id="btnLogout" title="로그아웃">나가기</button></header>
+      <div id="invites"></div>
+      <h2>채팅방 <span class="actions"><button id="btnBrowse" title="공개 방 찾기">찾기</button><button id="btnCreate" title="방 만들기">＋</button></span></h2>
+      <ul id="roomList"></ul>
+      <h2>사람들 <small>(누르면 1:1 창)</small></h2>
+      <ul id="userList"></ul>
+    </aside>
+
+    <main>
+      <div id="banner" hidden>서버 연결이 끊겼습니다. 다시 연결하는 중…</div>
+      <header id="chatHeader">
+        <strong id="chatTitle">방을 선택하세요</strong>
+        <span class="actions">
+          <button id="btnInvite" hidden>초대</button>
+          <button id="btnLeave" hidden>방 나가기</button>
+        </span>
+      </header>
+      <div id="messages"></div>
+      <div id="replyBar" hidden><span id="replyText"></span><button id="btnReplyCancel">✕</button></div>
+      <form id="composer" hidden>
+        <button type="button" id="btnAttach" title="파일·이미지 보내기">📎</button>
+        <textarea id="input" rows="1" placeholder="메시지 입력 (@닉네임으로 호출)" title="Enter 전송, Shift+Enter 줄바꿈"></textarea>
+        <button type="submit" class="primary">보내기</button>
+      </form>
+    </main>
+
+    <aside id="members" hidden>
+      <h2>구성원</h2>
+      <ul id="memberList"></ul>
+    </aside>
+  </section>
+
+  <!-- 입력/선택 창 -->
+  <div id="modal" class="center overlay" hidden>
+    <form id="modalForm" class="card">
+      <h3 id="modalTitle"></h3>
+      <div id="modalBody"></div>
+      <p id="modalError" class="error"></p>
+      <div class="row"><button type="submit" class="primary" id="modalOk">확인</button><button type="button" id="modalCancel">닫기</button></div>
+    </form>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
