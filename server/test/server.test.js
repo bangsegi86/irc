@@ -71,14 +71,16 @@ test('비공개 방: 초대 → 수락 → 대화 → 답글 → @호출', async
 
   const reply = (await b.req('msg.send', { roomId: room.id, text: '반가워요 @영희', replyTo: first.id })).msg;
   assert.deepEqual(reply.replyTo, { id: first.id, nick: '영희', text: '안녕하세요' });
-  assert.equal((await a.next('mention')).msg.id, reply.id);
+  const mention = (await a.next('notice')).notice;
+  assert.deepEqual([mention.kind, mention.msgId, mention.roomName, mention.from.nick, mention.text], ['mention', reply.id, '비밀방', '민수', '반가워요 @영희']);
 
   const hist = await b.req('history', { roomId: room.id });
   assert.deepEqual(hist.messages.map((m) => m.text), ['안녕하세요', '반가워요 @영희']);
   await assert.rejects(c.req('history', { roomId: room.id }), { code: 'not_member' });
 
   await a.req('call', { userId: b.me.id, roomId: room.id });
-  assert.equal((await b.next('call')).from.nick, '영희');
+  const call = (await b.next('notice')).notice;
+  assert.deepEqual([call.kind, call.roomId, call.from.nick], ['call', room.id, '영희']);
   await assert.rejects(c.req('call', { userId: b.me.id, roomId: room.id }), { code: 'not_member' });
   await Promise.all([a.close(), b.close(), c.close()]);
 });
@@ -179,4 +181,30 @@ test('P2P 신호 전달: 당사자끼리만 오가고, 완료 알림 후 전송�
   await b.req('users.list'); // 서버가 file.done 을 처리할 때까지 기다림
   await assert.rejects(a.req('file.accept', { transferId }), { code: 'no_transfer' });
   await Promise.all([a.close(), b.close(), c.close()]);
+});
+
+test('알림 내역: 꺼져 있던 동안의 호출도 다음 접속 때 보이고, 지울 수 있다', async () => {
+  const a = await user('부르는이'), b = await user('자리비움');
+  const token = (await b.req('login', { nick: '자리비움', password: 'pass1234' })).token;
+  const { room } = await a.req('room.create', { name: '알림방', isPublic: true });
+  await b.req('room.join', { roomId: room.id });
+  await b.close();
+
+  await a.req('msg.send', { roomId: room.id, text: '@자리비움 회의 시작해요' });
+  assert.equal((await a.req('call', { userId: b.me.id, roomId: room.id })).online, false);
+  await assert.rejects(a.req('call', { userId: a.me.id }), { code: 'self' });
+
+  const b2 = await client();
+  const { notices } = await b2.req('login', { token });
+  assert.deepEqual(notices.map((n) => n.kind), ['call', 'mention']); // 최신순
+  assert.equal(notices[1].text, '@자리비움 회의 시작해요');
+
+  await b2.req('notice.clear', { noticeId: notices[1].id });
+  await a.req('notice.clear', { noticeId: notices[0].id }); // 남의 알림은 못 지운다
+  const b3 = await client();
+  assert.deepEqual((await b3.req('login', { token })).notices.map((n) => n.kind), ['call']);
+  await b3.req('notice.clear');
+  const b4 = await client();
+  assert.equal((await b4.req('login', { token })).notices.length, 0);
+  await Promise.all([a.close(), b2.close(), b3.close(), b4.close()]);
 });

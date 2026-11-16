@@ -76,6 +76,7 @@ async function run() {
   // 4. 상대의 메시지(@호출 포함) → 답글
   await b.req('msg.send', { roomId: room.id, text: `안녕하세요 @${myNick} 잘 보이나요?` });
   await until(() => js(win, `!!document.querySelector('.msg .mention')`), '호출 강조 표시');
+  await until(() => js(win, `document.querySelectorAll('#noticeList .notice').length === 1`), '알림 내역에 호출 표시');
   await js(win, `document.querySelector('.msg .replyBtn').click(); input.value='네, 잘 보입니다'; composer.requestSubmit()`);
   const reply = await b.next('msg', (e) => e.msg.text === '네, 잘 보입니다');
   assert.equal(reply.msg.replyTo.nick, peerNick);
@@ -115,7 +116,7 @@ async function run() {
 
   // 7. 1:1 창
   await js(win, `document.querySelector('#userList li').click()`);
-  const dm = await until(() => BrowserWindow.getAllWindows().find((w) => w !== win), '1:1 창 열림');
+  const dm = await until(() => BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().includes('dm=')), '1:1 창 열림');
   await until(() => js(dm, `!document.getElementById('composer').hidden`), '1:1 창 준비');
   await b.req('msg.send', { toUserId: (await b.req('users.list')).users.find((u) => u.nick === myNick).id, text: '1:1로 따로 이야기해요' });
   await until(() => js(dm, `document.querySelectorAll('.msg').length === 1`), '1:1 메시지 표시');
@@ -123,6 +124,43 @@ async function run() {
   assert.equal((await b.next('msg', (e) => e.msg.dm && e.msg.text === '좋아요')).msg.from.nick, myNick);
   assert.equal(await js(win, `document.querySelectorAll('#messages .msg').length`), 4, '1:1 메시지는 방에 나타나지 않아야 함');
   await shot(dm, 'dm.png');
+
+  // 8. 창 닫기 → 트레이, 호출 → 우측 하단 팝업 → 팝업을 누르면 해당 방으로 이동
+  dm.destroy();
+  await js(win, `(() => { state.current = null; showNoRoom(); })()`); // 다른 화면을 보던 상황
+  win.close();
+  await until(() => !win.isDestroyed() && !win.isVisible(), '닫으면 숨겨짐(종료되지 않음)');
+  await sleep(300);
+  await b.req('msg.send', { roomId: room.id, text: `@${myNick} 자리에 계신가요? 급한 일입니다` });
+  const findToast = (text) => BrowserWindow.getAllWindows().find((w) => { const u = decodeURIComponent(w.webContents.getURL()).replace(/\+/g, ' '); return u.includes('toast.html') && u.includes(text); });
+  const toast = await until(() => findToast('급한 일'), '알림 팝업');
+  await until(() => js(toast, `document.getElementById('toast').classList.contains('in')`), '팝업 올라옴');
+  assert.match(await js(toast, `document.getElementById('body').textContent`), /급한 일입니다/);
+  const { workArea } = require('electron').screen.getPrimaryDisplay();
+  const tb = toast.getBounds();
+  assert.ok(tb.x + tb.width <= workArea.x + workArea.width && tb.y + tb.height === workArea.y + workArea.height, '팝업은 화면 우측 하단에 있어야 함');
+  await sleep(450);
+  await shot(toast, 'toast.png');
+  await js(toast, `document.getElementById('toast').click()`);
+  await until(() => win.isVisible(), '팝업을 누르면 창이 다시 열림');
+  await until(() => js(win, `chatTitle.textContent === ${JSON.stringify(roomName)}`), '호출된 방으로 이동');
+  await until(() => js(win, `document.querySelectorAll('#noticeList .notice').length === 1`), '이동한 알림은 내역에서 빠짐(처음 호출 1건만 남음)');
+  await until(() => js(win, `[...document.querySelectorAll('.msg .text')].some((n) => n.textContent.includes('급한 일'))`), '이동한 방에 호출 메시지 표시');
+  await shot(win, 'main.png');
+
+  // 9. 팝업은 5초 뒤 스스로 사라진다
+  win.hide();
+  await b.req('call', { userId: (await b.req('users.list')).users.find((u) => u.nick === myNick).id, roomId: room.id });
+  const t0 = Date.now();
+  const toast2 = await until(() => findToast('방에서 찾고'), '두 번째 팝업');
+  await until(() => toast2.isDestroyed(), '팝업 자동 사라짐', 9000);
+  const shown = Date.now() - t0;
+  assert.ok(shown > 5000 && shown < 7500, `팝업 표시 시간이 5초 남짓이어야 함 (${shown}ms)`);
+  win.show();
+  await js(win, `document.querySelector('#noticeList .notice').click()`);
+  await until(() => js(win, `document.querySelectorAll('#noticeList .notice').length === 1`), '알림을 누르면 내역에서 빠짐');
+  await js(win, `btnNoticeClear.click()`);
+  await until(() => js(win, `document.querySelector('#noticeList .none') && btnNoticeClear.hidden`), '모두 지우기');
 
   console.log(`SMOKE_OK shots=${shots}`);
 }
