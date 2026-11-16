@@ -35,7 +35,7 @@ async function run() {
 
   if (role === 'send') {
     await js(`request('room.create', { name: ${JSON.stringify(roomName)}, isPublic: true })`);
-    await until(() => js(`document.querySelectorAll('#memberList li').length === 2`), '받는 쪽 입장');
+    await until(() => js(`document.querySelectorAll('#memberList li.member').length === 2`), '받는 쪽 입장');
     await js(`btnAttach.click()`);
     await until(() => js(`[...document.querySelectorAll('.msg .text')].some((n) => n.textContent === '받았음')`), '받는 쪽의 완료 메시지', 40000);
   } else {
