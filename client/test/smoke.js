@@ -185,6 +185,21 @@ async function run() {
   await until(() => js(win, `btnTheme.textContent === '어둡게'`), '밝기 버튼으로 전환');
   await shot(win, 'rich.png');
 
+  // 4-6. 서버 주소 변경: 틀린 주소면 안내 후 원래 연결 유지, 맞는 주소면 로그인 유지한 채 옮겨 붙음
+  step('4-6');
+  assert.deepEqual(await js(win, `['192.168.0.10', '192.168.0.10:8080', 'ws://host.example:7070/', ' WS://10.0.0.1 '].map(normalizeUrl)`),
+    ['ws://192.168.0.10:7070', 'ws://192.168.0.10:8080', 'ws://host.example:7070', 'ws://10.0.0.1:7070']);
+  await js(win, `btnServer.click()`);
+  assert.equal(await js(win, `!modal.hidden && document.querySelector('#modalBody input').value`), URL);
+  await js(win, `document.querySelector('#modalBody input').value = '127.0.0.1:1'; modalOk.click()`);
+  await until(() => js(win, `/연결할 수 없습니다/.test(modalError.textContent)`), '틀린 주소 안내');
+  assert.equal((await js(win, `request('users.list').then((r) => r.users.length > 0)`)), true, '틀린 주소를 넣어도 기존 연결은 유지되어야 함');
+  const altUrl = URL.replace('127.0.0.1', 'localhost');
+  await js(win, `document.querySelector('#modalBody input').value = ${JSON.stringify(altUrl.replace('ws://', ''))}; modalOk.click()`);
+  await until(() => js(win, `modal.hidden && localStorage.getItem('sb.url') === ${JSON.stringify(altUrl)} && banner.hidden && state.ws.url.startsWith(${JSON.stringify(altUrl)})`), '새 주소로 옮겨 붙음');
+  await until(() => js(win, `chatTitle.textContent === ${JSON.stringify(roomName)} && document.querySelectorAll('#messages .msg').length >= 5`), '옮긴 뒤에도 같은 방과 대화가 보임');
+  assert.equal(await js(win, `state.me.nick`), myNick, '로그인이 유지되어야 함');
+
   // 5. 파일 보내기(클라이언트 → 상대)
   step('5');
   await js(win, `btnAttach.click()`);

@@ -8,17 +8,24 @@ const port = Number(process.env.PORT) || 7070;
 const dbPath = resolve(process.env.DATA_DIR || './data', 'sarangbang.db');
 mkdirSync(dirname(dbPath), { recursive: true });
 
+// 기록(로그): LOG=off 로 끌 수 있다. 기본은 켜짐. 메시지 내용은 남기지 않는다.
+const logOn = !/^(off|0|false|no)$/i.test(process.env.LOG || 'on');
+const logDir = resolve(dirname(dbPath), 'logs');
+const logDays = process.env.LOG_DAYS === undefined ? 14 : Number(process.env.LOG_DAYS) || 0;
+
 const server = startServer({
   port,
   dbPath,
   serverPassword: process.env.SERVER_PASSWORD || '',
   retentionDays: Number(process.env.RETENTION_DAYS) || 0,
+  log: { enabled: logOn, dir: logDir, days: logDays },
 });
 
 server.ready.then(() => {
   console.log('사랑방 서버가 켜졌습니다.');
   console.log(`  데이터 위치 : ${dbPath}`);
   console.log(`  접속 암호   : ${process.env.SERVER_PASSWORD ? '설정됨' : '없음'}`);
+  console.log(`  기록(로그)  : ${logOn ? `켜짐 → ${logDir} (${logDays > 0 ? `${logDays}일 보관` : '계속 보관'}, 메시지 내용은 남기지 않음)` : '꺼짐 (LOG=on 으로 켤 수 있음)'}`);
   console.log('  클라이언트에 입력할 주소:');
   console.log(`    이 PC에서      ws://localhost:${port}`);
   for (const list of Object.values(networkInterfaces())) {

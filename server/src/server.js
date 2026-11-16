@@ -1,6 +1,7 @@
 // 사랑방 서버: WebSocket 프로토콜 처리
 import { WebSocketServer } from 'ws';
 import { openDb, hashPassword, verifyPassword, newToken, dmKey } from './db.js';
+import { createLogger } from './logger.js';
 
 const MAX_TEXT = 20000;
 const RICH_LANGS = new Set(['text', 'sql', 'json', 'javascript', 'python', 'markdown']);
@@ -40,8 +41,9 @@ class ChatError extends Error {
 }
 const fail = (code, message) => { throw new ChatError(code, message); };
 
-export function startServer({ port = 7070, host = '0.0.0.0', dbPath = ':memory:', serverPassword = '', retentionDays = 0 } = {}) {
+export function startServer({ port = 7070, host = '0.0.0.0', dbPath = ':memory:', serverPassword = '', retentionDays = 0, log = {} } = {}) {
   const db = openDb(dbPath);
+  const logger = createLogger(log);
   const wss = new WebSocketServer({ port, host, maxPayload: MAX_CHUNK + 1024 });
   const online = new Map();    // userId -> Set<conn>
   const transfers = new Map(); // transferId -> { receiver, sender, offered, rejected, timer }
@@ -377,8 +379,38 @@ export function startServer({ port = 7070, host = '0.0.0.0', dbPath = ':memory:'
 
   const NO_REPLY = new Set(['file.ack', 'file.end', 'file.cancel', 'file.signal', 'file.done']);
 
-  wss.on('connection', (ws) => {
-    const conn = { ws, user: null };
+  // ---------- 기록(로그): 메시지 내용·파일 이름은 남기지 않는다 ----------
+  const roomLabel = (id) => { const r = q('SELECT name FROM rooms WHERE id = ?').get(id); return r ? `${r.name}(#${id})` : `#${id}`; };
+  const who = (conn) => ({ ip: conn.ip, 닉네임: conn.user?.nick });
+  const LOGGED = {
+    register: (c) => ['가입', who(c)],
+    login: (c, m) => ['로그인 성공', { ...who(c), 방식: m.token ? '자동 로그인' : '비밀번호' }],
+    'room.create': (c, m, r) => ['방 생성', { ...who(c), 방: roomLabel(r.room.id), 공개: r.room.isPublic ? '예' : '아니오' }],
+    'room.join': (c, m) => ['방 입장', { ...who(c), 방: roomLabel(m.roomId) }],
+    'room.leave': (c, m) => ['방 나감', { ...who(c), 방: `#${m.roomId}` }],
+    'room.invite': (c, m) => ['초대', { ...who(c), 방: roomLabel(m.roomId), 대상: m.nick }],
+    'invite.accept': (c, m, r) => ['초대 수락', { ...who(c), 방: roomLabel(r.room.id) }],
+    'invite.decline': (c) => ['초대 거절', who(c)],
+    'msg.send': (c, m, r) => [r.msg.roomId ? '메시지' : '1:1 메시지', {
+      ...who(c), 방: r.msg.roomId ? roomLabel(r.msg.roomId) : undefined, 상대: r.msg.roomId ? undefined : userById(r.msg.dm.find((id) => id !== c.user.id) ?? c.user.id).nick,
+      글자수: r.msg.text.length, 서식: r.msg.rich ? '있음' : undefined, 답글: r.msg.replyTo ? '예' : undefined, 파일크기: r.msg.file ? r.msg.file.size : undefined, 번호: r.msg.id,
+    }],
+    call: (c, m, r) => ['호출', { ...who(c), 대상: userById(m.userId)?.nick, 방: m.roomId != null ? roomLabel(m.roomId) : undefined, 상대접속: r.online ? '예' : '아니오' }],
+    'file.request': (c, m, r) => ['파일 요청', { ...who(c), 메시지번호: m.msgId, 전송번호: r.transferId, 크기: r.file.size }],
+    'file.accept': (c, m) => ['파일 전송 시작', { ...who(c), 전송번호: m.transferId, 방식: transfers.get(m.transferId)?.p2p ? '직접 전송 시도' : '서버 경유' }],
+    'file.reject': (c, m) => ['파일 원본 없음', { ...who(c), 전송번호: m.transferId }],
+    'file.end': (c, m) => ['파일 전송 완료', { ...who(c), 전송번호: m.transferId, 방식: '서버 경유' }],
+    'file.done': (c, m) => ['파일 전송 완료', { ...who(c), 전송번호: m.transferId, 방식: '직접 전송' }],
+    'file.cancel': (c, m) => ['파일 전송 취소', { ...who(c), 전송번호: m.transferId }],
+  };
+  function logRequest(conn, m, result) {
+    if (!logger.enabled || !LOGGED[m.t]) return;
+    try { logger.log(...LOGGED[m.t](conn, m, result || {})); } catch { /* 기록 실패가 서비스를 멈추면 안 된다 */ }
+  }
+
+  wss.on('connection', (ws, req) => {
+    const conn = { ws, user: null, ip: (req.socket.remoteAddress || '?').replace(/^::ffff:/, ''), since: Date.now() };
+    logger.log('접속 시도', { ip: conn.ip });
 
     ws.on('message', (data, isBinary) => {
       if (isBinary) { // 파일 조각: [전송번호 4바이트][내용]
@@ -393,10 +425,14 @@ export function startServer({ port = 7070, host = '0.0.0.0', dbPath = ':memory:'
       try {
         if (!handler) fail('unknown', '알 수 없는 요청입니다.');
         if (!conn.user && m.t !== 'register' && m.t !== 'login') fail('auth', '먼저 로그인해 주세요.');
+        const known = (m.t === 'file.end' || m.t === 'file.done' || m.t === 'file.cancel') && transfers.has(m.transferId); // 처리 전에 확인(처리하면 사라진다)
         const result = handler(conn, m);
         if (!NO_REPLY.has(m.t)) send(conn, { t: 'ok', id: m.id, ...result });
+        if (!NO_REPLY.has(m.t) || known) logRequest(conn, m, result);
       } catch (e) {
         if (!(e instanceof ChatError)) console.error('[서버 오류]', e);
+        if (m.t === 'login' || m.t === 'register') logger.log(m.t === 'login' ? '로그인 실패' : '가입 실패', { ip: conn.ip, 닉네임: typeof m.nick === 'string' ? m.nick.slice(0, 20) : undefined, 사유: e.code || 'internal' });
+        else logger.log('요청 실패', { ...who(conn), 요청: String(m.t).slice(0, 30), 사유: e.code || 'internal' });
         send(conn, { t: 'err', id: m.id, code: e.code || 'internal', message: e instanceof ChatError ? e.message : '서버 내부 오류가 발생했습니다.' });
       }
     });
@@ -406,6 +442,7 @@ export function startServer({ port = 7070, host = '0.0.0.0', dbPath = ':memory:'
         if (tr.sender === conn) endTransfer(id, [tr.receiver], '보낸 사람의 연결이 끊어졌습니다.');
         else if (tr.receiver === conn) endTransfer(id, [tr.sender], '받는 사람의 연결이 끊어졌습니다.');
       }
+      logger.log('접속 종료', { ...who(conn), 접속시간: `${Math.round((Date.now() - conn.since) / 1000)}초` });
       if (!conn.user) return;
       const set = online.get(conn.user.id);
       set?.delete(conn);
@@ -432,6 +469,7 @@ export function startServer({ port = 7070, host = '0.0.0.0', dbPath = ':memory:'
     get port() { return wss.address().port; },
     close() {
       clearInterval(sweeper);
+      logger.close();
       for (const tr of transfers.values()) clearTimeout(tr.timer);
       for (const c of wss.clients) c.terminate();
       return new Promise((resolve) => wss.close(() => { db.close(); resolve(); }));
