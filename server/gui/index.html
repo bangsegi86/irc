@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'">
+  <title>사랑방 서버</title>
+  <link rel="stylesheet" href="gui.css">
+</head>
+<body>
+  <nav id="nav">
+    <div class="brand"><span class="logo" aria-hidden="true"></span><strong>사랑방 서버</strong></div>
+    <button class="tab on" data-view="home">현황</button>
+    <button class="tab" data-view="log">기록 <span id="navProblems" class="badge" hidden></span></button>
+    <button class="tab" data-view="settings">설정</button>
+    <div class="grow"></div>
+    <div id="navStatus"><span class="dot"></span><span id="navStatusText">확인 중…</span></div>
+    <small id="version"></small>
+  </nav>
+
+  <main>
+    <!-- 현황 -->
+    <section id="view-home" class="view">
+      <div id="statusCard" class="card">
+        <div class="statusLine"><span id="statusDot" class="dot big"></span><div><h1 id="statusTitle">확인 중…</h1><p id="statusSub"></p></div></div>
+        <button id="btnToggle" class="primary">서버 시작</button>
+      </div>
+      <p id="errorBox" class="errorBox" hidden></p>
+
+      <h2>참여자에게 알려 줄 주소</h2>
+      <div id="addresses" class="cards"></div>
+      <p class="hint">같은 공유기 안의 참여자는 위 주소를 클라이언트의 서버 주소 칸에 넣으면 됩니다. 이 PC에서 직접 접속할 때는 <code id="localAddr"></code> 을 쓰세요.</p>
+
+      <h2>숫자로 보기</h2>
+      <div class="stats">
+        <div class="stat"><small>지금 접속</small><b id="stOnline">–</b></div>
+        <div class="stat"><small>가입자</small><b id="stUsers">–</b></div>
+        <div class="stat"><small>채팅방</small><b id="stRooms">–</b></div>
+        <div class="stat"><small>저장된 메시지</small><b id="stMessages">–</b></div>
+      </div>
+
+      <h2>지금 접속한 사람</h2>
+      <div class="tableWrap"><table id="connTable"><thead><tr><th>닉네임</th><th>IP 주소</th><th>접속한 지</th></tr></thead><tbody></tbody></table></div>
+
+      <h2>최근 문제 <button id="btnSeeProblems" class="ghost">기록에서 모두 보기</button></h2>
+      <div id="recentProblems" class="logList compact"></div>
+    </section>
+
+    <!-- 기록 -->
+    <section id="view-log" class="view" hidden>
+      <div id="logOff" class="errorBox" hidden>기록이 꺼져 있습니다. 설정에서 '기록 남기기'를 켜면 접속·로그인·메시지 전송 내역이 여기에 쌓입니다.</div>
+      <div id="logBar">
+        <div id="cats" role="tablist" aria-label="종류별 보기"></div>
+        <div class="row">
+          <label class="sr" for="logSearch">찾기</label>
+          <input id="logSearch" type="search" placeholder="닉네임, IP, 방 이름으로 찾기">
+          <label class="sr" for="logDate">날짜</label>
+          <select id="logDate" title="볼 날짜"></select>
+          <label class="check" title="새 기록이 오면 맨 아래로 따라갑니다"><input type="checkbox" id="logFollow" checked> 새 기록 따라가기</label>
+          <button id="btnLogCopy" title="지금 보이는 기록을 글자로 복사합니다(문제 문의할 때 붙여넣기 좋음)">보이는 기록 복사</button>
+          <button id="btnLogFolder" class="ghost">기록 폴더</button>
+        </div>
+      </div>
+      <div class="logHead" aria-hidden="true"><span>시각</span><span>종류</span><span>누가</span><span>IP 주소</span><span>무슨 일</span></div>
+      <div id="logList" class="logList" role="log" aria-label="서버 기록"></div>
+      <p id="logCount" class="hint"></p>
+    </section>
+
+    <!-- 설정 -->
+    <section id="view-settings" class="view" hidden>
+      <form id="settingsForm" class="card form">
+        <h2>접속</h2>
+        <label>포트 <small>참여자가 접속하는 번호입니다. 바꾸면 참여자도 클라이언트의 서버 주소에서 포트를 바꿔야 합니다.</small><input id="sPort" type="number" min="1" max="65535" required></label>
+        <label>서버 접속 암호 <small>가입할 때 요구합니다. 비워 두면 주소를 아는 누구나 가입할 수 있습니다.</small><input id="sPassword" type="text" maxlength="100" placeholder="(사용 안 함)" autocomplete="off"></label>
+
+        <h2>기록(로그)</h2>
+        <label class="switch"><input id="sLog" type="checkbox"><span><b>기록 남기기</b><small>접속, 로그인, 메시지 전송 등을 IP와 함께 남깁니다. 메시지 내용·파일 이름·비밀번호는 남기지 않습니다.</small></span></label>
+        <label>기록 보관 기간(일) <small>이보다 오래된 기록 파일은 자동으로 지웁니다. 0이면 지우지 않습니다.</small><input id="sLogDays" type="number" min="0" max="36500" required></label>
+
+        <h2>보관</h2>
+        <label>메시지 보관 기간(일) <small>이보다 오래된 대화를 자동으로 지웁니다. 0이면 지우지 않습니다.</small><input id="sRetention" type="number" min="0" max="36500" required></label>
+
+        <h2>실행</h2>
+        <label class="switch"><input id="sAutoStart" type="checkbox"><span><b>프로그램을 켜면 서버도 바로 시작</b><small>끄면 '서버 시작' 버튼을 눌러야 시작합니다.</small></span></label>
+        <label class="switch"><input id="sLaunch" type="checkbox"><span><b>PC를 켜면 자동으로 실행</b><small>윈도우에 로그인하면 이 프로그램이 함께 켜집니다.</small></span></label>
+        <label>화면 밝기<select id="sTheme"><option value="system">시스템 설정 따르기</option><option value="light">밝게</option><option value="dark">어둡게</option></select></label>
+
+        <p id="settingsMsg" class="hint"></p>
+        <div class="row"><button type="submit" class="primary">저장</button><button type="button" id="btnReset">되돌리기</button></div>
+      </form>
+
+      <div class="card form">
+        <h2>폴더</h2>
+        <p class="hint">데이터(계정·방·대화)는 <code id="dataPath"></code> 에 있습니다. 이 폴더를 통째로 다른 PC로 옮기면 그 PC가 서버를 이어받을 수 있습니다. 파일·이미지는 서버에 저장되지 않습니다.</p>
+        <div class="row"><button type="button" id="btnOpenData">데이터 폴더 열기</button><button type="button" id="btnOpenLogs">기록 폴더 열기</button></div>
+      </div>
+    </section>
+  </main>
+  <script src="gui.js"></script>
+</body>
+</html>

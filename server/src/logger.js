@@ -7,7 +7,8 @@ const two = (n) => String(n).padStart(2, '0');
 const dayOf = (d) => `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())}`;
 const timeOf = (d) => `${two(d.getHours())}:${two(d.getMinutes())}:${two(d.getSeconds())}`;
 
-export function createLogger({ enabled = false, dir = null, days = 14, echo = true } = {}) {
+// sink: 기록 한 건마다 { ts, kind, fields } 를 넘겨받는 함수(서버 화면이 실시간 표시에 쓴다)
+export function createLogger({ enabled = false, dir = null, days = 14, echo = true, sink = null } = {}) {
   if (!enabled) return { enabled: false, log() {}, close() {} };
   if (dir) mkdirSync(dir, { recursive: true });
 
@@ -32,6 +33,7 @@ export function createLogger({ enabled = false, dir = null, days = 14, echo = tr
       const detail = Object.entries(fields).filter(([, v]) => v !== undefined && v !== null && v !== '').map(([k, v]) => `${k}=${String(v).replace(/\s+/g, ' ')}`).join('  ');
       const line = `${dayOf(now)} ${timeOf(now)}  [${kind}]  ${detail}`;
       if (echo) console.log(line);
+      if (sink) { try { sink({ ts: now.getTime(), kind, fields: JSON.parse(JSON.stringify(fields)) }); } catch { /* 화면 표시 실패는 무시 */ } }
       if (dir) { try { appendFileSync(join(dir, `${dayOf(now)}.log`), `${line}\n`); } catch (e) { console.error('기록 파일에 쓰지 못했습니다.', e.message); } }
     },
     close() { clearInterval(timer); },
