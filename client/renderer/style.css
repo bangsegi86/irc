@@ -157,6 +157,14 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; background:
 #replyBar:not([hidden]) + #composer { border-radius: 0 0 14px 14px; }
 #composer { margin: 0 24px 18px; border: 1px solid var(--line); border-radius: 14px; background: var(--raised); flex-shrink: 0; }
 #composer:focus-within { border-color: var(--accent); }
+#pasteBar { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-bottom: 1px solid var(--line); background: var(--accent-soft); border-radius: 13px 13px 0 0; }
+#pasteBar .grow { flex: 1; }
+#pasteThumbs { display: flex; gap: 8px; flex-wrap: wrap; }
+#pasteThumbs .thumb { position: relative; width: 72px; height: 72px; border-radius: 8px; overflow: hidden; border: 1px solid var(--line); background: var(--chat); }
+#pasteThumbs .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+#pasteThumbs .thumb button { position: absolute; top: 2px; right: 2px; width: 22px; height: 22px; padding: 0; border-radius: 50%; background: var(--chat); font-size: 12px; line-height: 1; }
+#pasteLabel { font-size: 13px; }
+#pasteBar > button { padding: 7px 16px; white-space: nowrap; }
 #toolbar { display: flex; flex-wrap: wrap; gap: 2px; align-items: center; padding: 4px 8px; border-bottom: 1px solid var(--line); }
 #toolbar button { min-width: 28px; height: 32px; padding: 0 6px; border-color: transparent; color: var(--dim); line-height: 1; }
 #toolbar button:hover { color: var(--text); }

@@ -204,6 +204,39 @@ async function run() {
   assert.ok(b.events.some((e) => e.t === 'file.signal' && e.data.fallback), '전환 알림이 와야 함');
   assert.ok(Buffer.concat(got).equals(bigContent), '서버 경유로 받은 파일이 원본과 같아야 함');
 
+  // 5-3. 이미지 붙여넣기: 입력란 위 미리보기 → 취소 → 다시 붙여넣기 → 전송(파일 전송으로 나감)
+  step('5-3');
+  const pasteImage = `(async () => {
+    const c = document.createElement('canvas'); c.width = 120; c.height = 80;
+    const g = c.getContext('2d'); g.fillStyle = '#2a7f63'; g.fillRect(0, 0, 120, 80); g.fillStyle = '#fff'; g.fillRect(20, 20, 40, 40);
+    const blob = await new Promise((r) => c.toBlob(r, 'image/png'));
+    const dt = new DataTransfer(); dt.items.add(new File([blob], 'image.png', { type: 'image/png' }));
+    input.focus();
+    input.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+    return blob.size;
+  })()`;
+  const beforePaste = await js(win, `document.querySelectorAll('#messages .msg').length`);
+  await js(win, pasteImage);
+  await until(() => js(win, `!pasteBar.hidden && document.querySelectorAll('#pasteThumbs .thumb img').length === 1 && pasteLabel.textContent.includes('1장') && !input.querySelector('img')`), '미리보기 표시(입력란에는 들어가지 않음)');
+  await sleep(300);
+  await shot(win, 'paste.png');
+  await js(win, `btnPasteCancel.click()`);
+  await until(() => js(win, `pasteBar.hidden && document.querySelectorAll('#pasteThumbs .thumb').length === 0`), '취소하면 미리보기 사라짐');
+  assert.equal(await js(win, `document.querySelectorAll('#messages .msg').length`), beforePaste, '취소하면 아무것도 보내지 않아야 함');
+  const pastedSize = await js(win, pasteImage);
+  await until(() => js(win, `!pasteBar.hidden`), '다시 붙여넣기');
+  await js(win, `btnPasteSend.click()`);
+  const pastedMsg = (await b.next('msg', (e) => e.msg.file?.mime === 'image/png')).msg;
+  assert.match(pastedMsg.file.name, /^붙여넣은 이미지 \d{4}-\d{2}-\d{2} \d{6}\.png$/);
+  assert.equal(pastedMsg.file.size, pastedSize);
+  await until(() => js(win, `pasteBar.hidden && [...document.querySelectorAll('.file img')].some((i) => i.naturalWidth === 120)`), '보낸 이미지가 대화창에 표시, 미리보기 닫힘');
+  got.length = 0;
+  b.events.splice(0, b.events.length, ...b.events.filter((e) => e.t !== 'file.end')); // 앞 단계의 완료 알림 비우기
+  await b.req('file.request', { msgId: pastedMsg.id });
+  await b.next('file.end');
+  assert.equal(Buffer.concat(got).length, pastedSize, '상대가 받은 이미지 크기가 같아야 함');
+  assert.deepEqual([...Buffer.concat(got).subarray(1, 4)], [0x50, 0x4e, 0x47], 'PNG 파일이어야 함');
+
   // 6. 이미지 받기(상대 → 클라이언트, 자동 수신)
   step('6');
   const png = nativeImage.createFromBitmap(Buffer.alloc(300 * 160 * 4, 0x90), { width: 300, height: 160 }).toPNG();
@@ -215,7 +248,7 @@ async function run() {
   b.ws.send(Buffer.concat([head, png]));
   await b.next('file.ack');
   b.emit('file.end', { transferId: offer.transferId });
-  await until(() => js(win, `(() => { const i = document.querySelector('.file img'); return !!i && i.naturalWidth === 300; })()`), '받은 이미지 표시');
+  await until(() => js(win, `[...document.querySelectorAll('.file img')].some((i) => i.naturalWidth === 300)`), '받은 이미지 표시');
   assert.ok(fs.readFileSync(path.join(tmp, 'downloads', 'Sarangbang', '풍경.png')).equals(png), '저장된 이미지가 원본과 같아야 함');
   await shot(win, 'main.png');
 
@@ -228,7 +261,7 @@ async function run() {
   await until(() => js(dm, `document.querySelectorAll('.msg').length === 1`), '1:1 메시지 표시');
   await js(dm, `input.textContent='좋아요'; composer.requestSubmit()`);
   assert.equal((await b.next('msg', (e) => e.msg.dm && e.msg.text === '좋아요')).msg.from.nick, myNick);
-  assert.equal(await js(win, `document.querySelectorAll('#messages .msg').length`), 7, '1:1 메시지는 방에 나타나지 않아야 함');
+  assert.equal(await js(win, `document.querySelectorAll('#messages .msg').length`), 8, '1:1 메시지는 방에 나타나지 않아야 함');
   await shot(dm, 'dm.png');
 
   // 8. 창 닫기 → 트레이, 호출 → 우측 하단 팝업 → 팝업을 누르면 해당 방으로 이동

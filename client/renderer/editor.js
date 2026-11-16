@@ -254,6 +254,12 @@ const Editor = (() => {
   }
   const focus = () => input.focus();
 
+  // 붙여넣은 내용이 이미지인 경우 그 파일들(글자가 함께 들어 있으면 글자를 우선한다 — 예: 엑셀 셀 복사)
+  function imagesIn(e) {
+    const images = [...(e.clipboardData?.files || [])].filter((f) => f.type.startsWith('image/'));
+    return images.length && !e.clipboardData.getData('text/plain') ? images : [];
+  }
+
   function init(opts) {
     onSend = opts.onSend;
     input = document.getElementById('input');
@@ -300,6 +306,7 @@ const Editor = (() => {
     const cleanup = () => { if (!input.textContent && !input.querySelector('pre, br + br')) input.replaceChildren(); };
     input.addEventListener('input', cleanup);
     input.addEventListener('paste', (e) => {
+      if (imagesIn(e).length) return; // 이미지는 화면 쪽에서 미리보기로 처리한다
       // 다른 프로그램의 서식은 버리고 글자만 붙인다
       e.preventDefault();
       const text = (e.clipboardData.getData('text/plain') || '').replace(/\r\n?/g, '\n');
@@ -322,5 +329,5 @@ const Editor = (() => {
     input.addEventListener('drop', (e) => e.preventDefault());
   }
 
-  return { init, getContent, clear, focus, renderRich, detectLang, insertCode };
+  return { init, getContent, clear, focus, renderRich, detectLang, insertCode, imagesIn };
 })();

@@ -177,6 +177,20 @@ function setup() {
   });
   ipcMain.handle('file:register', (_e, filePath) => registerFile(filePath).catch(() => null));
 
+  // 붙여넣은 이미지(캡처 화면 등)는 파일이 없으므로 이 PC에 저장해 두고 그 파일을 보낸다
+  ipcMain.handle('file:savePasted', async (_e, bytes, mime) => {
+    const ext = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/bmp': 'bmp' }[mime];
+    if (!ext || !bytes || bytes.length > 50 * 1024 * 1024) return null;
+    const dir = path.join(app.getPath('userData'), 'pasted');
+    await fsp.mkdir(dir, { recursive: true });
+    const d = new Date(), two = (n) => String(n).padStart(2, '0');
+    const base = `붙여넣은 이미지 ${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())} ${two(d.getHours())}${two(d.getMinutes())}${two(d.getSeconds())}`;
+    let target = path.join(dir, `${base}.${ext}`);
+    for (let i = 1; fs.existsSync(target); i++) target = path.join(dir, `${base} (${i}).${ext}`);
+    await fsp.writeFile(target, Buffer.from(bytes));
+    return registerFile(target);
+  });
+
   ipcMain.handle('file:local', async (_e, fileId) => {
     const p = fileMap[fileId];
     if (!p) return null;
