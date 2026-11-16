@@ -35,6 +35,8 @@ export function openDb(path) {
     CREATE INDEX IF NOT EXISTS idx_msg_room ON messages(room_id, id);
     CREATE INDEX IF NOT EXISTS idx_msg_dm ON messages(dm_key, id);
   `);
+  // 0.4: 서식 있는 메시지(굵게·색·코드 블록 등)를 담는 칸 추가
+  if (!db.prepare('PRAGMA table_info(messages)').all().some((c) => c.name === 'rich')) db.exec('ALTER TABLE messages ADD COLUMN rich TEXT');
   return db;
 }
 

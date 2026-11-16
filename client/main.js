@@ -1,5 +1,5 @@
 // 사랑방 클라이언트 메인 프로세스: 창·트레이·알림 팝업 관리, 파일 읽기/쓰기
-const { app, BrowserWindow, ipcMain, dialog, shell, Tray, Menu, nativeImage, screen } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, Tray, Menu, nativeImage, screen, clipboard } = require('electron');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
@@ -207,6 +207,7 @@ function setup() {
     await fsp.unlink(s.path).catch(() => {});
   });
 
+  ipcMain.handle('clipboard:write', (_e, text) => clipboard.writeText(String(text)));
   ipcMain.handle('file:open', (_e, fileId) => fileMap[fileId] && shell.openPath(fileMap[fileId]));
   ipcMain.handle('file:show', (_e, fileId) => fileMap[fileId] && shell.showItemInFolder(fileMap[fileId]));
 }

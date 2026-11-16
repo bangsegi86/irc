@@ -2,7 +2,7 @@
 <html lang="ko">
 <head>
   <meta charset="utf-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' file: data:; connect-src ws: wss:; style-src 'self'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' file: data:; connect-src ws: wss:; style-src 'self' 'unsafe-inline'">
   <title>사랑방</title>
   <link rel="stylesheet" href="style.css">
 </head>
@@ -48,9 +48,34 @@
       <div id="messages"></div>
       <div id="replyBar" hidden><span id="replyText"></span><button id="btnReplyCancel">✕</button></div>
       <form id="composer" hidden>
-        <button type="button" id="btnAttach" title="파일·이미지 보내기">📎</button>
-        <textarea id="input" rows="1" placeholder="메시지 입력 (@닉네임으로 호출)" title="Enter 전송, Shift+Enter 줄바꿈"></textarea>
-        <button type="submit" class="primary">보내기</button>
+        <div id="toolbar">
+          <button type="button" class="fmt" data-cmd="bold" title="굵게 (Ctrl+B)"><b>가</b></button>
+          <button type="button" class="fmt" data-cmd="italic" title="기울임 (Ctrl+I)"><i>가</i></button>
+          <button type="button" class="fmt" data-cmd="underline" title="밑줄 (Ctrl+U)"><u>가</u></button>
+          <button type="button" class="fmt" data-cmd="strikeThrough" title="취소선"><s>가</s></button>
+          <span class="sep fmt"></span>
+          <button type="button" class="fmt bg-yellow" data-bg="yellow" title="배경색: 노랑">가</button>
+          <button type="button" class="fmt bg-green" data-bg="green" title="배경색: 초록">가</button>
+          <button type="button" class="fmt bg-pink" data-bg="pink" title="배경색: 분홍">가</button>
+          <button type="button" class="fmt bg-blue" data-bg="blue" title="배경색: 파랑">가</button>
+          <button type="button" class="fmt" data-bg="" title="배경색 없애기">⌫</button>
+          <span class="sep fmt"></span>
+          <button type="button" class="fmt sz-s" data-size="s" title="작게">가</button>
+          <button type="button" class="fmt sz-l" data-size="l" title="크게">가</button>
+          <button type="button" class="fmt sz-xl" data-size="xl" title="아주 크게">가</button>
+          <span class="sep fmt"></span>
+          <button type="button" class="fmt" id="btnClearFmt" title="선택한 글자의 서식 지우기">서식 지우기</button>
+          <span class="grow"></span>
+          <select id="codeLang" hidden title="코드 언어"></select>
+          <button type="button" id="btnCode" title="코드·쿼리 입력">&lt;/&gt; 코드</button>
+        </div>
+        <div id="composeRow">
+          <button type="button" id="btnAttach" title="파일·이미지 보내기">📎</button>
+          <div id="input" contenteditable="true" spellcheck="false" data-placeholder="메시지 입력 (@닉네임으로 호출)" title="Enter 전송, Shift+Enter 줄바꿈"></div>
+          <textarea id="codeInput" hidden spellcheck="false" placeholder="코드나 쿼리를 입력하세요"></textarea>
+          <button type="submit" class="primary">보내기</button>
+        </div>
+        <div id="composeHint"></div>
       </form>
     </main>
 
@@ -70,6 +95,7 @@
     </form>
   </div>
 
+  <script src="editor.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
