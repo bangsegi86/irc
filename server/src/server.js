@@ -463,12 +463,20 @@ export function startServer({ port = 7070, host = '0.0.0.0', dbPath = ':memory:'
     sweeper.unref();
   }
 
-  const ready = new Promise((resolve, reject) => { wss.once('listening', resolve); wss.once('error', reject); });
+  const ready = new Promise((resolve, reject) => { wss.once('listening', () => { logger.log('서버 시작', { 포트: wss.address().port }); resolve(); }); wss.once('error', reject); });
   return {
     ready,
     get port() { return wss.address().port; },
+    // 서버 화면용 현황: 지금 접속한 사람과 전체 개수
+    status() {
+      const connections = [];
+      for (const set of online.values()) for (const c of set) connections.push({ ip: c.ip, nick: c.user.nick, since: c.since });
+      const count = (table) => q(`SELECT COUNT(*) AS n FROM ${table}`).get().n;
+      return { connections, waiting: wss.clients.size - connections.length, users: count('users'), rooms: count('rooms'), messages: count('messages') };
+    },
     close() {
       clearInterval(sweeper);
+      logger.log('서버 중지', {});
       logger.close();
       for (const tr of transfers.values()) clearTimeout(tr.timer);
       for (const c of wss.clients) c.terminate();

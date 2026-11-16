@@ -1,0 +1,119 @@
+/* 사랑방 서버 화면. 색은 클라이언트와 같은 묶음을 쓴다(어두운 모드 기본, 밝은 모드는 @media). */
+:root {
+  color-scheme: dark;
+  --rail: #1b1d22; --side: #202329; --chat: #272a31; --raised: #2f333b; --line: #3a3f48;
+  --text: #e7e9ec; --dim: #a6acb6; --hover: #2c3038; --active: #343943;
+  --accent: #3cc9a7; --on-accent: #0e2a23; --accent-soft: #24443d;
+  --bad: #f08a7c; --bad-bg: #43282a; --badge: #e5604d; --off: #6b7280;
+  --c-conn: #8e95a1; --c-login: #7db7f5; --c-room: #c9a6f5; --c-msg: #3cc9a7; --c-file: #e3a777; --c-server: #f4d58a;
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    color-scheme: light;
+    --rail: #e6e9ed; --side: #f2f4f6; --chat: #ffffff; --raised: #f5f6f8; --line: #dde1e6;
+    --text: #1d2126; --dim: #59616d; --hover: #eef1f4; --active: #dde2e8;
+    --accent: #0b7f6c; --on-accent: #ffffff; --accent-soft: #d8efe9;
+    --bad: #b93a2a; --bad-bg: #fdeceA; --badge: #c7402e; --off: #8a929e;
+    --c-conn: #59616d; --c-login: #1f5faf; --c-room: #6a47a8; --c-msg: #0b7f6c; --c-file: #a1491a; --c-server: #7a5a00;
+  }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { display: flex; background: var(--chat); color: var(--text); font: 14px/1.5 "Malgun Gothic", "맑은 고딕", "Apple SD Gothic Neo", system-ui, sans-serif; }
+[hidden] { display: none !important; }
+small { color: var(--dim); font-weight: normal; }
+code { font: 13px Consolas, "D2Coding", Menlo, monospace; background: var(--raised); border-radius: 4px; padding: 1px 5px; overflow-wrap: anywhere; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: var(--line); border-radius: 5px; border: 2px solid transparent; background-clip: content-box; }
+
+button { font: inherit; color: var(--text); background: transparent; border: 1px solid var(--line); border-radius: 8px; padding: 7px 14px; cursor: pointer; white-space: nowrap; }
+button:hover { background: var(--hover); }
+button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 700; }
+button.primary.stop { background: transparent; color: var(--bad); border-color: var(--bad); }
+button.ghost { border-color: transparent; color: var(--dim); padding: 4px 8px; font-size: 12px; font-weight: normal; }
+input, select { font: inherit; color: var(--text); background: var(--chat); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.grow { flex: 1; }
+.dot { width: 10px; height: 10px; border-radius: 50%; background: var(--off); flex-shrink: 0; display: inline-block; }
+.dot.on { background: var(--accent); } .dot.err { background: var(--bad); }
+.dot.big { width: 16px; height: 16px; }
+.badge { background: var(--badge); color: #fff; border-radius: 9px; font-size: 11px; font-weight: 700; padding: 1px 7px; }
+.hint { color: var(--dim); font-size: 13px; margin: 8px 0 0; }
+.errorBox { margin: 12px 0 0; padding: 10px 14px; border-radius: 10px; background: var(--bad-bg); color: var(--bad); border: 1px solid var(--bad); }
+
+#nav { width: 208px; background: var(--side); border-right: 1px solid var(--line); display: flex; flex-direction: column; padding: 0 8px 12px; flex-shrink: 0; }
+.brand { display: flex; align-items: center; gap: 10px; height: 56px; padding: 0 8px; font-size: 15px; }
+.logo { width: 26px; height: 26px; border-radius: 6px; background: var(--accent); }
+.tab { text-align: left; border-color: transparent; color: var(--dim); height: 42px; margin: 1px 0; display: flex; align-items: center; justify-content: space-between; }
+.tab.on { background: var(--active); color: var(--text); font-weight: 700; }
+#navStatus { display: flex; align-items: center; gap: 8px; padding: 8px; font-size: 13px; }
+#version { padding: 0 8px; font-size: 11px; }
+
+main { flex: 1; min-width: 0; overflow-y: auto; }
+.view { padding: 22px 28px 28px; max-width: 1280px; }
+#view-log { display: flex; flex-direction: column; height: 100%; max-width: none; padding-bottom: 12px; }
+h1 { font-size: 20px; margin: 0; }
+h2 { font-size: 13px; font-weight: 700; color: var(--dim); margin: 26px 0 10px; display: flex; align-items: center; gap: 8px; }
+.card { background: var(--raised); border: 1px solid var(--line); border-radius: 14px; padding: 18px 20px; }
+#statusCard { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.statusLine { display: flex; align-items: center; gap: 14px; }
+.statusLine p { margin: 2px 0 0; color: var(--dim); font-size: 13px; }
+#btnToggle { padding: 10px 22px; }
+.cards { display: flex; gap: 10px; flex-wrap: wrap; }
+.addr { display: flex; align-items: center; gap: 14px; background: var(--raised); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px 12px 18px; }
+.addr b { font: 700 20px Consolas, "D2Coding", Menlo, monospace; letter-spacing: .02em; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+.stat { background: var(--raised); border-radius: 12px; padding: 12px 16px; display: flex; flex-direction: column; }
+.stat b { font-size: 24px; }
+.tableWrap { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 9px 16px; border-bottom: 1px solid var(--line); }
+th { font-size: 12px; color: var(--dim); background: var(--raised); }
+tr:last-child td { border-bottom: 0; }
+td.mono, .mono { font: 13px Consolas, "D2Coding", Menlo, monospace; }
+td.empty { color: var(--dim); text-align: center; }
+
+/* 기록 */
+#logBar { display: flex; flex-direction: column; gap: 10px; margin-bottom: 10px; }
+#cats { display: flex; gap: 6px; flex-wrap: wrap; }
+#cats button { padding: 5px 12px; border-radius: 16px; display: flex; gap: 8px; align-items: center; color: var(--dim); }
+#cats button b { color: var(--text); font-weight: 700; }
+#cats button.on { background: var(--active); color: var(--text); border-color: var(--accent); }
+#cats button.problem b { color: var(--bad); }
+#logSearch { flex: 1; min-width: 200px; }
+label.check { display: flex; align-items: center; gap: 6px; color: var(--dim); font-size: 13px; white-space: nowrap; }
+.logHead, .logRow { display: grid; grid-template-columns: 76px 118px minmax(90px, 150px) 128px minmax(0, 1fr); gap: 0 12px; align-items: baseline; padding: 0 14px; }
+.logHead { font-size: 12px; color: var(--dim); padding-bottom: 6px; border-bottom: 1px solid var(--line); }
+.logList { flex: 1; overflow-y: auto; border: 1px solid var(--line); border-top: 0; border-radius: 0 0 12px 12px; min-height: 120px; }
+.logList.compact { border-top: 1px solid var(--line); border-radius: 12px; min-height: 0; }
+.logRow { padding-top: 5px; padding-bottom: 5px; border-bottom: 1px solid color-mix(in srgb, var(--line) 55%, transparent); }
+.logRow:hover { background: var(--hover); }
+.logRow.problem { background: var(--bad-bg); }
+.logRow .time { font: 13px Consolas, "D2Coding", Menlo, monospace; color: var(--dim); }
+.logRow .kind { font-size: 12px; font-weight: 700; white-space: nowrap; display: flex; align-items: center; gap: 6px; }
+.logRow .kind::before { content: ""; width: 8px; height: 8px; border-radius: 2px; background: var(--kc, var(--dim)); flex-shrink: 0; }
+.logRow .kind { color: var(--kc, var(--dim)); }
+.logRow.problem .kind { --kc: var(--bad); }
+.logRow .who, .logRow .ip { background: none; border: 0; padding: 0; text-align: left; color: inherit; font: inherit; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border-radius: 4px; }
+.logRow .who { font-weight: 700; }
+.logRow .ip { font: 13px Consolas, "D2Coding", Menlo, monospace; color: var(--dim); }
+.logRow button.who:hover, .logRow button.ip:hover { text-decoration: underline; background: none; cursor: pointer; }
+.logRow .what { overflow-wrap: anywhere; }
+.logRow .what small { margin-left: 6px; }
+.logGap { text-align: center; color: var(--dim); font-size: 11px; padding: 3px 0; background: var(--raised); border-bottom: 1px solid var(--line); }
+.logEmpty { color: var(--dim); text-align: center; padding: 28px 12px; }
+.cat-conn { --kc: var(--c-conn); } .cat-login { --kc: var(--c-login); } .cat-room { --kc: var(--c-room); }
+.cat-msg { --kc: var(--c-msg); } .cat-file { --kc: var(--c-file); } .cat-server { --kc: var(--c-server); }
+
+/* 설정 */
+.form { max-width: 640px; margin-bottom: 16px; }
+.form h2:first-child { margin-top: 0; }
+.form label { display: flex; flex-direction: column; gap: 4px; margin-bottom: 14px; font-weight: 700; }
+.form label small { font-size: 12px; }
+.form label input[type="number"] { width: 140px; }
+.form label.switch { flex-direction: row; align-items: flex-start; gap: 12px; font-weight: normal; cursor: pointer; }
+.form label.switch input { width: 18px; height: 18px; margin-top: 3px; accent-color: var(--accent); flex-shrink: 0; }
+.form label.switch span { display: flex; flex-direction: column; }
+.form select { width: 220px; }
