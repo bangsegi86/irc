@@ -111,19 +111,58 @@ async function run() {
   assert.deepEqual(fancy.rich.find((r) => r.s.includes('색칠')), { s: '색칠', bg: 'yellow', sz: 'l', x: 1, u: 1 });
   await until(() => js(win, `!!document.querySelector('.msg .f-b') && !!document.querySelector('.msg .bg-yellow.sz-l.f-x.f-u') && input.textContent === ''`), '보낸 서식 메시지 표시, 입력란 비워짐');
 
-  // 4-3. 코드: 여러 줄 쿼리를 붙여 넣으면 코드 입력으로 자동 전환되고 SQL 로 인식된다
+  // 4-3. 한 메시지에 서식 글자 + 코드 블록: 굵은 글자 → 여러 줄 쿼리 붙여넣기(코드 블록 자동 삽입, SQL 인식) → 블록 밖에서 글 이어 쓰기
   step('4-3');
   await js(win, `(() => {
+    input.focus();
+    document.querySelector('[data-cmd="bold"]').click();
+    document.execCommand('insertText', false, '확인 부탁');
+    document.querySelector('[data-cmd="bold"]').click();
     const dt = new DataTransfer();
     dt.setData('text/plain', 'SELECT name, age\\nFROM users\\nWHERE age > 20 -- 성인만');
-    input.focus();
     input.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
   })()`);
-  await until(() => js(win, `!codeInput.hidden && input.hidden && codeInput.value.startsWith('SELECT') && /SQL/.test(composeHint.textContent)`), '코드 입력으로 자동 전환');
+  await until(() => js(win, `(() => { const p = input.querySelector('pre'); return !!p && p.dataset.lang === 'sql' && !codeLang.hidden && codeLang.value === 'sql' && btnCode.textContent === '코드 밖으로' && /코드 블록 안/.test(composeHint.textContent); })()`), '코드 블록 삽입 + 언어 인식 + 도구 줄 전환');
+  await js(win, `(() => { btnCode.click(); document.execCommand('insertText', false, '결과 알려 주세요'); })()`);
+  await until(() => js(win, `codeLang.hidden && btnCode.textContent.includes('코드') && composeHint.textContent === ''`), '블록 밖으로 나오면 서식 도구 줄로 복귀');
   await js(win, `composer.requestSubmit()`);
-  const code = (await b.next('msg', (e) => e.msg.rich?.[0]?.t === 'code')).msg;
-  assert.deepEqual(code.rich, [{ t: 'code', lang: 'sql', text: 'SELECT name, age\nFROM users\nWHERE age > 20 -- 성인만' }]);
-  await until(() => js(win, `(() => { const c = document.querySelector('.msg .code'); return !!c && c.querySelector('.codeHead span').textContent === 'SQL' && c.querySelectorAll('.tok-kw').length >= 3 && !!c.querySelector('.tok-com') && codeInput.hidden; })()`), '코드 블록 표시(색 입힘), 일반 입력으로 복귀');
+  const code = (await b.next('msg', (e) => e.msg.rich?.some((n) => n.t === 'code'))).msg;
+  assert.deepEqual(code.rich, [
+    { s: '확인 부탁', b: 1 },
+    { t: 'code', lang: 'sql', text: 'SELECT name, age\nFROM users\nWHERE age > 20 -- 성인만' },
+    { s: '결과 알려 주세요' },
+  ]);
+  assert.equal(code.text, '확인 부탁\nSELECT name, age\nFROM users\nWHERE age > 20 -- 성인만\n결과 알려 주세요');
+  await until(() => js(win, `(() => { const m = [...document.querySelectorAll('.msg')].pop(); const c = m.querySelector('.code'); return !!c && !!m.querySelector('.f-b') && m.querySelector('.text').textContent.includes('결과 알려 주세요') && c.querySelector('.codeHead span').textContent === 'SQL' && c.querySelectorAll('.tok-kw').length >= 3 && !!c.querySelector('.tok-com') && !input.querySelector('pre'); })()`), '서식 글자와 코드 블록이 한 메시지에 표시');
+
+  // 4-3b. 코드 블록 안에서 Enter는 줄바꿈(전송 안 됨), Tab은 들여쓰기, 언어 직접 선택, 글 중간에 블록 넣기
+  step('4-3b');
+  const sentBefore = await js(win, `document.querySelectorAll('#messages .msg').length`);
+  const typed = await js(win, `(() => {
+    const key = (k, more = {}) => input.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true, ...more }));
+    input.focus();
+    document.execCommand('insertText', false, '앞글 뒷글');
+    const t = input.firstChild; getSelection().collapse(t, 3);           // '앞글 ' 뒤에 커서
+    document.querySelector('#btnCode').click();                            // 글 중간에 블록
+    document.execCommand('insertText', false, 'def f(x):');
+    key('Enter'); key('Tab');
+    document.execCommand('insertText', false, 'return x');
+    codeLang.value = 'python'; codeLang.dispatchEvent(new Event('change'));
+    return Editor.getContent();
+  })()`);
+  assert.deepEqual(typed, { rich: [{ s: '앞글 ' }, { t: 'code', lang: 'python', text: 'def f(x):\n  return x' }, { s: '뒷글' }] });
+  assert.equal(await js(win, `document.querySelectorAll('#messages .msg').length`), sentBefore, '코드 블록 안의 Enter는 전송하지 않아야 함');
+  await shot(win, 'rich-edit.png');
+  // 빈 블록에서 Backspace → 블록 삭제, 서식 없는 글만 남으면 일반 메시지
+  assert.deepEqual(await js(win, `(() => {
+    Editor.clear(); input.focus();
+    document.execCommand('insertText', false, '글만 남김');
+    Editor.insertCode();
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace', bubbles: true, cancelable: true }));
+    const r = [!!input.querySelector('pre'), Editor.getContent()];
+    Editor.clear();
+    return r;
+  })()`), [false, { text: '글만 남김' }]);
 
   // 4-4. 상대가 보낸 서식은 글자로만 표시된다(태그가 실행되지 않음)
   step('4-4');
@@ -132,9 +171,7 @@ async function run() {
   assert.equal(await js(win, `document.querySelectorAll('#messages img').length + (window.hacked ? 100 : 0)`), 0, '태그가 실행되면 안 됨');
   await until(() => js(win, `!!document.querySelector('.msg .code .tok-key')`), 'JSON 색 입힘');
   assert.equal(await js(win, `document.querySelectorAll('#toolbar [data-size].on').length`), 0, '빈 입력란에서는 크기 버튼이 눌린 상태가 아니어야 함');
-  await js(win, `Editor.setCodeMode(true, 'def hello(name):\\n    return "안녕 " + name  # 인사')`);
   await shot(win, 'rich.png');
-  await js(win, `Editor.clear()`);
 
   // 5. 파일 보내기(클라이언트 → 상대)
   step('5');

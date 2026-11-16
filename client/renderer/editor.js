@@ -1,4 +1,5 @@
-// 메시지 입력기: 보이는 대로 편집(굵게·기울임·밑줄·취소선·배경색·크기) + 코드/쿼리 입력
+// 메시지 입력기: 보이는 대로 편집(굵게·기울임·밑줄·취소선·배경색·크기) + 입력란 안에 넣는 코드 블록
+// 한 메시지에 서식 글자와 코드 블록을 함께 쓸 수 있다.
 // 메시지는 HTML이 아니라 허용된 조각 목록으로 주고받는다.
 //   글자 조각: { s, b, i, u, x, bg, sz }   코드 조각: { t: 'code', lang, text }
 'use strict';
@@ -16,8 +17,8 @@ const Editor = (() => {
   };
   const COMMENTS = { sql: '--[^\\n]*|/\\*[\\s\\S]*?\\*/', javascript: '//[^\\n]*|/\\*[\\s\\S]*?\\*/', python: '#[^\\n]*' };
 
-  let input, codeInput, toolbar, langSel, hint, codeBtn, onSend;
-  let codeMode = false;
+  let input, toolbar, langSel, hint, codeBtn, onSend;
+  let activePre = null; // 마지막으로 커서가 있던 코드 블록(언어 선택 대상)
   const colorKey = {}; // 'rgb(r, g, b)' -> 팔레트 이름
 
   const el = (tag, props = {}, ...children) => { const n = Object.assign(document.createElement(tag), props); n.append(...children); return n; };
@@ -83,20 +84,41 @@ const Editor = (() => {
   }
 
   // ---------- 입력란 내용을 조각 목록으로 ----------
+  // 코드 블록(<pre>) 안의 글자: 줄바꿈 태그는 줄바꿈 글자로
+  function preText(pre) {
+    let out = '';
+    (function walk(node) {
+      for (const child of node.childNodes) {
+        if (child.nodeType === Node.TEXT_NODE) out += child.data;
+        else if (child.tagName === 'BR') out += '\n';
+        else if (child.nodeType === Node.ELEMENT_NODE) {
+          if (child.tagName === 'DIV' && out && !out.endsWith('\n')) out += '\n';
+          walk(child);
+        }
+      }
+    })(pre);
+    return out.replace(/\s+$/, '');
+  }
+
   function serialize() {
-    const runs = [];
+    const nodes = [];
     const push = (s, f) => {
-      const last = runs[runs.length - 1];
-      const same = last && ['b', 'i', 'u', 'x', 'bg', 'sz'].every((k) => last[k] === f[k]);
-      if (same) last.s += s; else runs.push({ s, ...f });
+      const last = nodes[nodes.length - 1];
+      const same = last && last.t !== 'code' && ['b', 'i', 'u', 'x', 'bg', 'sz'].every((k) => last[k] === f[k]);
+      if (same) last.s += s; else nodes.push({ s, ...f });
     };
-    const text = () => runs.map((r) => r.s).join('');
+    const needsBreak = () => { const last = nodes[nodes.length - 1]; return !!last && last.t !== 'code' && !last.s.endsWith('\n'); };
     (function walk(node, f) {
       for (const child of node.childNodes) {
         if (child.nodeType === Node.TEXT_NODE) { if (child.data) push(child.data, f); continue; }
         if (child.nodeType !== Node.ELEMENT_NODE) continue;
         const tag = child.tagName;
         if (tag === 'BR') { push('\n', {}); continue; }
+        if (tag === 'PRE') { // 코드 블록
+          const text = preText(child);
+          if (text.trim()) nodes.push({ t: 'code', lang: child.dataset.lang === 'auto' ? detectLang(text) || 'text' : child.dataset.lang, text });
+          continue;
+        }
         const g = { ...f };
         if (tag === 'B' || tag === 'STRONG') g.b = 1;
         if (tag === 'I' || tag === 'EM') g.i = 1;
@@ -105,29 +127,32 @@ const Editor = (() => {
         if (tag === 'FONT' && child.size) { const sz = FONT_TO_SIZE[child.size]; if (sz) g.sz = sz; else delete g.sz; }
         const bg = child.style?.backgroundColor;
         if (bg) { if (colorKey[bg]) g.bg = colorKey[bg]; else delete g.bg; }
-        const block = tag === 'DIV' || tag === 'P';
-        if (block && runs.length && !text().endsWith('\n')) push('\n', {});
+        if ((tag === 'DIV' || tag === 'P') && needsBreak()) push('\n', {});
         walk(child, g);
       }
     })(input, {});
-    // 앞뒤 빈칸·빈 줄 정리
-    while (runs.length && !runs[0].s.trimStart()) runs.shift();
-    while (runs.length && !runs[runs.length - 1].s.trimEnd()) runs.pop();
-    if (runs.length) { runs[0].s = runs[0].s.trimStart(); runs[runs.length - 1].s = runs[runs.length - 1].s.trimEnd(); }
-    return runs.map((r) => Object.fromEntries(Object.entries(r).filter(([, v]) => v)));
+
+    // 정리: 맨 앞·맨 뒤, 그리고 코드 블록과 맞닿은 쪽의 빈 줄을 없앤다(블록 자체가 줄을 나눈다)
+    const isRun = (n) => n && n.t !== 'code';
+    nodes.forEach((n, i) => {
+      if (!isRun(n)) return;
+      if (i === 0 || !isRun(nodes[i - 1])) n.s = i === 0 ? n.s.trimStart() : n.s.replace(/^\n+/, '');
+      if (i === nodes.length - 1 || !isRun(nodes[i + 1])) n.s = i === nodes.length - 1 ? n.s.trimEnd() : n.s.replace(/\n+$/, '');
+    });
+    let out = nodes.filter((n) => !isRun(n) || n.s);
+    while (out.length && isRun(out[0]) && !out[0].s.trim()) out.shift();
+    while (out.length && isRun(out[out.length - 1]) && !out[out.length - 1].s.trim()) out.pop();
+    if (isRun(out[0])) out[0].s = out[0].s.trimStart();
+    if (isRun(out[out.length - 1])) out[out.length - 1].s = out[out.length - 1].s.trimEnd();
+    out = out.filter((n) => !isRun(n) || n.s);
+    return out.map((r) => Object.fromEntries(Object.entries(r).filter(([, v]) => v)));
   }
 
-  // 보낼 내용: { text } (서식 없음) 또는 { rich } (서식·코드). 비어 있으면 null
+  // 보낼 내용: { text } (서식 없음) 또는 { rich } (서식·코드 포함). 비어 있으면 null
   function getContent() {
-    if (codeMode) {
-      const text = codeInput.value.replace(/\s+$/, '');
-      if (!text.trim()) return null;
-      const lang = langSel.value === 'auto' ? detectLang(text) || 'text' : langSel.value;
-      return { rich: [{ t: 'code', lang, text }] };
-    }
-    const runs = serialize();
-    if (!runs.length) return null;
-    return runs.some((r) => Object.keys(r).length > 1) ? { rich: runs } : { text: runs.map((r) => r.s).join('') };
+    const nodes = serialize();
+    if (!nodes.length) return null;
+    return nodes.some((n) => n.t === 'code' || Object.keys(n).length > 1) ? { rich: nodes } : { text: nodes.map((n) => n.s).join('') };
   }
 
   // ---------- 서식 버튼 ----------
@@ -137,58 +162,101 @@ const Editor = (() => {
     refreshToolbar();
   }
 
+  const selectionNode = () => { const n = document.getSelection()?.anchorNode; return n && input.contains(n) ? n : null; };
+
+  // 커서가 들어 있는 코드 블록(없으면 null)
+  function currentPre() {
+    for (let n = selectionNode(); n && n !== input; n = n.parentNode) if (n.tagName === 'PRE') return n;
+    return null;
+  }
+
   // 커서 위치의 글자 크기(작게/크게/아주 크게). 보통이면 null
   function currentSize() {
-    for (let n = document.getSelection()?.anchorNode; n && n !== input; n = n.parentNode) {
+    for (let n = selectionNode(); n && n !== input; n = n.parentNode) {
       if (n.tagName === 'FONT' && n.size) return FONT_TO_SIZE[n.size] || null;
     }
     return null;
   }
 
   function refreshToolbar() {
-    const inside = !codeMode && input.contains(document.getSelection()?.anchorNode);
-    for (const b of toolbar.querySelectorAll('[data-cmd]')) b.classList.toggle('on', inside && document.queryCommandState(b.dataset.cmd));
-    const size = inside ? currentSize() : null;
+    const inside = !!selectionNode();
+    const pre = currentPre();
+    if (pre) activePre = pre;
+    for (const b of toolbar.querySelectorAll('[data-cmd]')) b.classList.toggle('on', inside && !pre && document.queryCommandState(b.dataset.cmd));
+    const size = inside && !pre ? currentSize() : null;
     for (const b of toolbar.querySelectorAll('[data-size]')) b.classList.toggle('on', b.dataset.size === size);
+    // 코드 블록 안에서는 글자 서식 대신 언어 선택을 보여 준다
+    const inCode = !!pre || document.activeElement === langSel;
+    toolbar.classList.toggle('codeMode', inCode);
+    codeBtn.classList.toggle('on', inCode);
+    codeBtn.textContent = inCode ? '코드 밖으로' : '</> 코드';
+    langSel.hidden = !inCode;
+    if (pre) langSel.value = pre.dataset.lang;
+    hint.textContent = inCode ? "코드 블록 안 — Enter 줄바꿈 · Ctrl+Enter 전송 · '코드 밖으로' 버튼이나 ↓ 키로 블록을 벗어나 글을 이어 씁니다." : '';
   }
 
-  function setCodeMode(on, text, note) {
-    if (on === codeMode && text == null) return;
-    if (on) {
-      codeInput.value = text ?? input.innerText.replace(/\n$/, '');
-      input.replaceChildren();
-    } else if (codeMode) {
-      input.textContent = codeInput.value;
-      codeInput.value = '';
-    }
-    codeMode = on;
-    toolbar.classList.toggle('codeMode', on);
-    codeBtn.classList.toggle('on', on);
-    input.hidden = on;
-    codeInput.hidden = langSel.hidden = !on;
-    hint.textContent = on ? `${note ? `${note} · ` : ''}코드 입력 중 — Enter 줄바꿈, Ctrl+Enter 전송. 일반 글자로 돌아가려면 '코드' 버튼을 다시 누르세요.` : '';
-    growCode();
-    focus();
+  function setLang(pre, lang) {
+    pre.dataset.lang = lang;
+    pre.dataset.label = lang === 'auto' ? '코드 · 언어 자동 인식' : `코드 · ${LANG_LABEL[lang]}`;
   }
 
-  function growCode() {
-    codeInput.style.height = 'auto';
-    codeInput.style.height = `${Math.min(Math.max(codeInput.scrollHeight, 80), 260)}px`;
+  function placeCaret(node, atStart) {
+    const range = document.createRange();
+    range.selectNodeContents(node);
+    range.collapse(!!atStart);
+    const sel = document.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+  }
+
+  // 커서 위치에 코드 블록을 넣는다. 선택한 글자가 있으면 그 글자가 코드가 된다.
+  function insertCode(text = '', lang = 'auto') {
+    input.focus();
+    const sel = document.getSelection();
+    const range = sel.rangeCount && input.contains(sel.anchorNode) ? sel.getRangeAt(0) : null;
+    let content = text;
+    if (range && !range.collapsed) { if (!content) content = range.toString(); range.deleteContents(); }
+    const pre = document.createElement('pre');
+    pre.className = 'codeEdit';
+    pre.spellcheck = false;
+    setLang(pre, lang);
+    if (content) pre.textContent = content; else pre.append(document.createElement('br'));
+
+    const at = range ? range.startContainer : null;
+    if (!at) input.append(pre);
+    else if (at === input || (at.nodeType === Node.TEXT_NODE && at.parentNode === input)) range.insertNode(pre); // 글 중간이면 그 자리에서 나눈다
+    else { let top = at; while (top.parentNode !== input) top = top.parentNode; top.after(pre); }           // 서식 안이면 그 줄 뒤에
+    for (const side of [pre.previousSibling, pre.nextSibling]) if (side?.nodeType === Node.TEXT_NODE && !side.data) side.remove();
+    if (!pre.nextSibling) input.append(document.createElement('br')); // 블록 뒤에 글을 이어 쓸 자리
+    placeCaret(pre, !content);
+    activePre = pre;
+    refreshToolbar();
+    return pre;
+  }
+
+  // 코드 블록을 벗어나 그 뒤에서 글을 이어 쓴다
+  function exitCode(pre) {
+    if (!pre.nextSibling) input.append(document.createElement('br'));
+    const range = document.createRange();
+    range.setStartAfter(pre);
+    range.collapse(true);
+    const sel = document.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    input.focus();
+    refreshToolbar();
   }
 
   function clear() {
     input.replaceChildren();
-    codeInput.value = '';
-    if (codeMode) setCodeMode(false);
-    langSel.value = 'auto';
+    activePre = null;
     refreshToolbar();
   }
-  const focus = () => (codeMode ? codeInput : input).focus();
+  const focus = () => input.focus();
 
   function init(opts) {
     onSend = opts.onSend;
     input = document.getElementById('input');
-    codeInput = document.getElementById('codeInput');
     toolbar = document.getElementById('toolbar');
     langSel = document.getElementById('codeLang');
     hint = document.getElementById('composeHint');
@@ -204,36 +272,55 @@ const Editor = (() => {
     toolbar.addEventListener('click', (e) => {
       const b = e.target.closest('button');
       if (!b) return;
+      if (b.id === 'btnCode') { const pre = currentPre() || (document.activeElement === langSel ? activePre : null); if (pre) exitCode(pre); else insertCode(); return; }
+      if (currentPre()) return; // 코드 블록 안에서는 글자 서식을 쓰지 않는다
       if (b.dataset.cmd) exec(b.dataset.cmd);
       else if (b.dataset.bg != null) exec('hiliteColor', b.dataset.bg ? PALETTE[b.dataset.bg] : 'transparent');
       else if (b.dataset.size) exec('fontSize', currentSize() === b.dataset.size ? '3' : SIZE_TO_FONT[b.dataset.size]); // 같은 크기를 다시 누르면 보통으로
       else if (b.id === 'btnClearFmt') { exec('hiliteColor', 'transparent'); exec('removeFormat'); }
-      else if (b.id === 'btnCode') setCodeMode(!codeMode);
     });
+    langSel.addEventListener('change', () => {
+      if (activePre?.isConnected) { setLang(activePre, langSel.value); input.focus(); placeCaret(activePre, false); }
+      refreshToolbar();
+    });
+    langSel.addEventListener('blur', refreshToolbar);
     document.addEventListener('selectionchange', refreshToolbar);
 
     input.addEventListener('keydown', (e) => {
-      // Enter 전송, Shift+Enter 줄바꿈. 한글 조합 중의 Enter는 전송하지 않는다
-      if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); onSend(); }
+      const pre = currentPre();
+      if (e.key === 'Enter' && !e.isComposing) { // 한글 조합 중의 Enter는 건드리지 않는다
+        if (pre && !(e.ctrlKey || e.metaKey)) { e.preventDefault(); document.execCommand('insertLineBreak'); return; } // 코드 안: 줄바꿈
+        if (pre || !e.shiftKey) { e.preventDefault(); onSend(); }                                                  // 그 밖: Enter 전송, Shift+Enter 줄바꿈
+        return;
+      }
+      if (!pre) return;
+      if (e.key === 'Tab') { e.preventDefault(); document.execCommand('insertText', false, '  '); }
+      if (e.key === 'Backspace' && !preText(pre)) { e.preventDefault(); const next = pre.nextSibling; pre.remove(); if (next?.isConnected) placeCaret(next, true); cleanup(); refreshToolbar(); } // 빈 블록은 지운다
     });
-    input.addEventListener('input', () => { if (!input.textContent && !input.querySelector('br + br')) input.replaceChildren(); });
+    const cleanup = () => { if (!input.textContent && !input.querySelector('pre, br + br')) input.replaceChildren(); };
+    input.addEventListener('input', cleanup);
     input.addEventListener('paste', (e) => {
-      // 다른 프로그램의 서식은 버리고 글자만 붙인다. 여러 줄 코드·쿼리면 코드 입력으로 자동 전환
+      // 다른 프로그램의 서식은 버리고 글자만 붙인다
       e.preventDefault();
       const text = (e.clipboardData.getData('text/plain') || '').replace(/\r\n?/g, '\n');
       if (!text) return;
-      const lang = text.includes('\n') && !input.textContent.trim() ? detectLang(text) : null;
-      if (lang) setCodeMode(true, text, `${LANG_LABEL[lang]}(으)로 인식했습니다`);
+      const pre = currentPre();
+      if (pre) { // 코드 블록 안: 줄바꿈까지 그대로
+        const range = document.getSelection().getRangeAt(0);
+        range.deleteContents();
+        const node = document.createTextNode(text);
+        range.insertNode(node);
+        range.setStartAfter(node);
+        range.collapse(true);
+        return;
+      }
+      // 여러 줄 코드·쿼리면 그 자리에 코드 블록으로 넣는다
+      const lang = text.includes('\n') ? detectLang(text) : null;
+      if (lang) insertCode(text, lang);
       else document.execCommand('insertText', false, text);
     });
     input.addEventListener('drop', (e) => e.preventDefault());
-
-    codeInput.addEventListener('input', growCode);
-    codeInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); onSend(); }
-      if (e.key === 'Tab') { e.preventDefault(); document.execCommand('insertText', false, '  '); }
-    });
   }
 
-  return { init, getContent, clear, focus, renderRich, detectLang, setCodeMode };
+  return { init, getContent, clear, focus, renderRich, detectLang, insertCode };
 })();

@@ -1,6 +1,6 @@
 {
   "name": "sarangbang-server",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "사랑방 채팅 서버",
   "type": "module",
   "private": true,
