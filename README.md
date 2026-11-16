@@ -1,6 +1,6 @@
 # 사랑방 (Sarangbang)
 
-개인 PC에서 켜는 IRC형 채팅. 서버는 글자 메시지만 보관하고, 파일·이미지는 서버에 저장하지 않고 보낸 사람 PC에서 받는 사람 PC로 바로 넘깁니다.
+개인 PC에서 켜는 IRC형 채팅. 서버는 글자 메시지만 보관하고, 파일·이미지는 서버에 저장하지 않습니다. 두 PC가 직접 주고받고(P2P), 직접 연결이 안 되면 서버를 통과만 시켜 넘깁니다.
 
 설계 문서: [docs/DESIGN.md](docs/DESIGN.md)
 
@@ -30,6 +30,8 @@ cd server && npm install && npm test          # 서버 통합 테스트
 ```
 cd client && npm install && npx electron test/smoke.js
 ```
+
+P2P 직접 전송 점검은 클라이언트 두 개를 띄웁니다(방법은 `client/test/smoke-p2p.js` 첫머리 참고).
 
 ## 브랜치
 

@@ -91,6 +91,14 @@ async function run() {
   await b.next('file.end');
   assert.ok(Buffer.concat(got).equals(bigContent), '상대가 받은 파일이 원본과 같아야 함');
 
+  // 5-2. 상대가 직접 전송(P2P)을 요청했지만 연결이 안 되는 경우 → 서버 경유로 자동 전환
+  got.length = 0;
+  await b.req('file.request', { msgId: fileMsg.id, p2p: true });
+  await b.next('file.signal', (e) => e.data.sdp);
+  await until(() => b.events.some((e) => e.t === 'file.end'), '직접 연결 실패 후 서버 경유 전송', 20000);
+  assert.ok(b.events.some((e) => e.t === 'file.signal' && e.data.fallback), '전환 알림이 와야 함');
+  assert.ok(Buffer.concat(got).equals(bigContent), '서버 경유로 받은 파일이 원본과 같아야 함');
+
   // 6. 이미지 받기(상대 → 클라이언트, 자동 수신)
   const png = nativeImage.createFromBitmap(Buffer.alloc(300 * 160 * 4, 0x90), { width: 300, height: 160 }).toPNG();
   await b.req('msg.send', { roomId: room.id, text: '사진 보냅니다', file: { fileId: `p${suffix}`, name: '풍경.png', size: png.length, mime: 'image/png' } });
