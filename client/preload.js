@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld('api', {
   registerDropped: (file) => ipcRenderer.invoke('file:register', webUtils.getPathForFile(file)),
   pathOf: (file) => webUtils.getPathForFile(file),
   savePasted: call('file:savePasted'),
+  pastedDir: call('pasted:dir'),
   localFile: call('file:local'),
   readFile: call('file:read'),
   saveStart: call('file:saveStart'),
