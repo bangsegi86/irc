@@ -6,6 +6,8 @@ contextBridge.exposeInMainWorld('api', {
   openDm: call('dm:open'),
   dmIncoming: call('dm:incoming'),
   notify: call('notify'),
+  toastClick: call('toast:click'),
+  onGoto: (handler) => ipcRenderer.on('goto', (_e, target) => handler(target)),
   pickFiles: call('file:pick'),
   registerDropped: (file) => ipcRenderer.invoke('file:register', webUtils.getPathForFile(file)),
   localFile: call('file:local'),

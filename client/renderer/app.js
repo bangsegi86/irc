@@ -15,6 +15,7 @@ const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
 const state = {
   me: null, ws: null, nextId: 1, pending: new Map(),
   rooms: new Map(), users: new Map(), invites: [],
+  notices: [],              // 나를 호출한 내역(최신순). 서버에 저장되어 꺼져 있던 동안의 호출도 보인다
   current: null,            // { type: 'room' | 'dm', id, nick? }
   unread: new Map(),        // 'room:1' | 'dm:2' -> 개수
   replyTo: null, oldestId: null,
@@ -114,6 +115,7 @@ async function enter(session) {
   state.me = session.user;
   state.rooms = new Map(session.rooms.map((r) => [r.id, r]));
   state.invites = session.invites;
+  state.notices = session.notices || [];
   const { users } = await request('users.list');
   state.users = new Map(users.map((u) => [u.id, u]));
   $('login').hidden = true;
@@ -178,11 +180,14 @@ function onJson(m) {
       if (!state.invites.some((i) => i.id === m.invite.id)) state.invites.push(m.invite);
       window.api.notify('채팅방 초대', `${m.invite.from} 님이 '${m.invite.roomName}' 방에 초대했습니다.`);
       return renderSidebar();
-    case 'mention':
-      window.api.notify(`${m.msg.from.nick} 님이 호출했습니다`, m.msg.text.slice(0, 100));
-      return flashMessage(m.msg.id);
-    case 'call':
-      return window.api.notify(`${m.from.nick} 님이 호출했습니다`, m.roomName ? `'${m.roomName}' 방에서 찾고 있어요.` : '1:1 대화에서 찾고 있어요.');
+    case 'notice': { // 누군가 나를 호출함
+      const n = m.notice;
+      state.notices.unshift(n);
+      renderSidebar();
+      window.api.notify(`${n.from.nick} 님이 호출했습니다${n.roomName ? ` · ${n.roomName}` : ''}`, noticeText(n), { onlyIfAway: true, noticeId: n.id });
+      if (n.msgId && state.current?.type === 'room' && state.current.id === n.roomId) flashMessage(n.msgId);
+      return;
+    }
   }
 }
 
@@ -202,7 +207,33 @@ function onMessage(msg) {
 const bump = (view) => state.unread.set(keyOf(view), (state.unread.get(keyOf(view)) || 0) + 1);
 
 // ---------------- 옆 목록 ----------------
+const noticeText = (n) => (n.kind === 'mention' ? n.text : n.roomName ? '방에서 찾고 있어요.' : '1:1 대화에서 찾고 있어요.');
+
+// 알림을 누르면 해당 방(또는 1:1 창)으로 이동하고 그 알림은 내역에서 지운다
+async function gotoNotice(n) {
+  state.notices = state.notices.filter((x) => x.id !== n.id);
+  request('notice.clear', { noticeId: n.id }).catch(() => {});
+  renderSidebar();
+  if (n.roomId == null) return openDm(n.from);
+  if (!state.rooms.has(n.roomId)) return window.api.notify('이동할 수 없습니다', '이미 나간 방의 알림입니다.');
+  await openView({ type: 'room', id: n.roomId });
+  if (n.msgId) flashMessage(n.msgId);
+}
+
+function clearNotices() {
+  state.notices = [];
+  request('notice.clear').catch(() => {});
+  renderSidebar();
+}
+
 function renderSidebar() {
+  $('noticeCount').hidden = $('btnNoticeClear').hidden = !state.notices.length;
+  $('noticeCount').textContent = String(state.notices.length);
+  $('noticeList').replaceChildren(...(state.notices.length ? state.notices.map((n) => el('li', { className: 'notice', title: '눌러서 이동', onclick: () => gotoNotice(n) },
+    el('div', { className: 'who' }, el('b', {}, `🔔 ${n.from.nick}${n.roomName ? ` · ${n.roomName}` : ''}`)),
+    el('div', { className: 'what' }, noticeText(n)),
+    el('div', { className: 'when' }, fmtTime(n.ts)))) : [el('li', { className: 'none' }, '새 알림이 없습니다.')]));
+
   $('invites').replaceChildren(...state.invites.map((inv) => el('div', { className: 'invite' },
     el('div', {}, `${inv.from} 님이 '${inv.roomName}' 방에 초대했습니다.`),
     el('div', { className: 'row' },
@@ -252,8 +283,10 @@ function renderMembers() {
 }
 
 async function callUser(m, room) {
-  try { await request('call', { userId: m.id, roomId: room.id }); }
-  catch (e) { window.api.notify('호출 실패', e.message); }
+  try {
+    const { online } = await request('call', { userId: m.id, roomId: room.id });
+    window.api.notify(`${m.nick} 님을 호출했습니다`, online ? '상대 화면에 알림이 떴습니다.' : '지금은 접속 중이 아닙니다. 다음에 접속하면 알림 내역에 나타납니다.');
+  } catch (e) { window.api.notify('호출 실패', e.message); }
 }
 
 // ---------------- 대화 화면 ----------------
@@ -695,6 +728,8 @@ function wire() {
   $('btnInvite').onclick = inviteUser;
   $('btnLeave').onclick = leaveRoom;
   $('btnReplyCancel').onclick = () => setReply(null);
+  $('btnNoticeClear').onclick = clearNotices;
+  if (!DM_MODE) window.api.onGoto(({ noticeId }) => { const n = state.notices.find((x) => x.id === noticeId); if (n) gotoNotice(n); });
   $('modalCancel').onclick = closeModal;
   $('btnAttach').onclick = async () => sendFiles(await window.api.pickFiles());
   $('composer').onsubmit = (e) => { e.preventDefault(); sendText(); };
