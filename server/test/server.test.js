@@ -1,6 +1,9 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
+import { mkdtempSync, readFileSync, readdirSync, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import WebSocket from 'ws';
 import { startServer } from '../src/server.js';
 
@@ -237,4 +240,43 @@ test('서식 메시지: 허용된 서식만 남고, 일반 글자도 함께 저�
   await assert.rejects(a.req('msg.send', { toUserId: b.me.id, rich: 'not-array' }), { code: 'bad_rich' });
   await assert.rejects(a.req('msg.send', { toUserId: b.me.id, rich: [{ s: '   ' }] }), { code: 'empty' });
   await Promise.all([a.close(), b.close()]);
+});
+
+test('기록(로그): 접속·로그인·메시지 등을 남기되 메시지 내용은 남기지 않고, 끄면 아무것도 남기지 않는다', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sb-log-'));
+  const srv = startServer({ port: 0, host: '127.0.0.1', log: { enabled: true, dir, echo: false } });
+  await srv.ready;
+  const open = async () => { const ws = new WebSocket(`ws://127.0.0.1:${srv.port}`); await new Promise((r) => ws.once('open', r)); let id = 1; const wait = new Map();
+    ws.on('message', (d, bin) => { if (bin) return; const m = JSON.parse(d.toString()); wait.get(m.id)?.(m); });
+    return { ws, req: (t, body = {}) => new Promise((res) => { const n = id++; wait.set(n, res); ws.send(JSON.stringify({ t, id: n, ...body })); }) }; };
+  const a = await open(), b = await open();
+  await a.req('login', { nick: '없는사람', password: 'x' });
+  await a.req('register', { nick: '기록자', password: 'pass1234' });
+  const bob = await b.req('register', { nick: '상대방', password: 'pass1234' });
+  const { room } = await a.req('room.create', { name: '기록방', isPublic: false });
+  await a.req('msg.send', { roomId: room.id, text: '비밀내용ABC 절대남으면안됨' });
+  await a.req('msg.send', { toUserId: bob.user.id, rich: [{ s: '귓속말XYZ', b: 1 }], file: { fileId: 'f', name: '기밀문서이름.pdf', size: 1234 } });
+  await a.req('room.join', { roomId: 9999 });
+  a.ws.close(); b.ws.close();
+  await new Promise((r) => setTimeout(r, 150));
+  await srv.close();
+
+  const files = readdirSync(dir);
+  assert.equal(files.length, 1);
+  assert.match(files[0], /^\d{4}-\d{2}-\d{2}\.log$/);
+  const text = readFileSync(join(dir, files[0]), 'utf8');
+  for (const expected of ['[접속 시도]  ip=127.0.0.1', '[로그인 실패]  ip=127.0.0.1  닉네임=없는사람  사유=bad_login', '[가입]  ip=127.0.0.1  닉네임=기록자',
+    '[방 생성]', '방=기록방(#', '[메시지]', '글자수=15', '[1:1 메시지]', '상대=상대방', '서식=있음', '파일크기=1234', '[요청 실패]', '요청=room.join  사유=no_room', '[접속 종료]  ip=127.0.0.1  닉네임=기록자']) {
+    assert.ok(text.includes(expected), `기록에 있어야 함: ${expected}\n${text}`);
+  }
+  for (const secret of ['비밀내용ABC', '절대남으면안됨', '귓속말XYZ', '기밀문서이름', 'pass1234']) assert.ok(!text.includes(secret), `기록에 남으면 안 됨: ${secret}`);
+
+  // 끈 경우
+  const dir2 = join(mkdtempSync(join(tmpdir(), 'sb-log-')), 'logs');
+  const srv2 = startServer({ port: 0, host: '127.0.0.1', log: { enabled: false, dir: dir2 } });
+  await srv2.ready;
+  const ws = new WebSocket(`ws://127.0.0.1:${srv2.port}`); await new Promise((r) => ws.once('open', r)); ws.close();
+  await new Promise((r) => setTimeout(r, 100));
+  await srv2.close();
+  assert.equal(existsSync(dir2), false);
 });

@@ -108,11 +108,70 @@ async function reconnect() {
   }
 }
 
+// ---------------- 서버 주소 ----------------
+// '192.168.0.10', '192.168.0.10:8080', 'ws://...' 어느 형태로 넣어도 받아 준다(포트를 생략하면 7070)
+function normalizeUrl(value) {
+  let u = String(value || '').trim();
+  if (!u) throw new Error('서버 주소를 입력해 주세요.');
+  if (!/^wss?:\/\//i.test(u)) u = `ws://${u}`;
+  let parsed;
+  try { parsed = new URL(u); } catch { throw new Error('서버 주소 형식이 올바르지 않습니다. 예: 192.168.0.10:7070'); }
+  if (!parsed.hostname) throw new Error('서버 주소 형식이 올바르지 않습니다. 예: 192.168.0.10:7070');
+  if (!parsed.port && parsed.protocol === 'ws:') parsed.port = '7070';
+  return `${parsed.protocol}//${parsed.host}`;
+}
+
+// 그 주소에 서버가 있는지만 확인한다(지금 연결은 건드리지 않음)
+function probe(url) {
+  return new Promise((resolve, reject) => {
+    const fail = () => reject(new Error(`${url} 에 연결할 수 없습니다. 주소·포트와 서버 실행 여부를 확인해 주세요.`));
+    let ws;
+    try { ws = new WebSocket(url); } catch { return fail(); }
+    const timer = setTimeout(() => { ws.close(); fail(); }, 5000);
+    ws.onopen = () => { clearTimeout(timer); ws.close(); resolve(); };
+    ws.onerror = () => { clearTimeout(timer); fail(); };
+  });
+}
+
+// 서버 PC의 IP·포트가 바뀌었을 때: 로그인은 유지한 채 새 주소로 옮겨 붙는다
+async function changeServer(value) {
+  const url = normalizeUrl(value);
+  await probe(url);
+  clearTimeout(state.reconnectTimer);
+  const dropWs = () => { const ws = state.ws; state.ws = null; ws?.close(); };
+  state.loggedIn = false;
+  dropWs();
+  onDisconnect(); // 진행 중이던 요청·전송 정리
+  try {
+    await connect(url);
+    const session = await request('login', { token: localStorage.getItem('sb.token') });
+    localStorage.setItem('sb.url', url); // 1:1 창들도 이 값을 보고 새 주소로 다시 붙는다
+    await enter(session);
+  } catch (e) {
+    dropWs();
+    state.loggedIn = true; // 실패하면 원래 주소로 되돌아간다
+    $('banner').hidden = false;
+    state.reconnectTimer = setTimeout(reconnect, 0);
+    throw new Error(e.code === 'bad_token' ? '그 주소는 다른 서버로 보입니다(지금 로그인 정보가 없음). 왼쪽 아래 나가기를 누른 뒤 새 주소로 로그인해 주세요.' : e.message);
+  }
+}
+
+function askServer() {
+  ask({
+    title: '서버 주소 변경', okLabel: '연결',
+    body: el('p', { className: 'note' }, '서버 PC의 IP나 포트가 바뀌었을 때 사용합니다. 로그인은 그대로 유지됩니다.'),
+    fields: [{ key: 'url', label: '새 서버 주소 (IP:포트)', value: localStorage.getItem('sb.url') || '', placeholder: '192.168.0.10:7070' }],
+    onSubmit: (v) => changeServer(v.url),
+  });
+}
+
 // ---------------- 로그인 ----------------
 async function doLogin(kind) {
   $('loginError').textContent = '';
-  const url = $('fUrl').value.trim();
+  let url;
   try {
+    url = normalizeUrl($('fUrl').value);
+    $('fUrl').value = url;
     await connect(url);
     const body = { nick: $('fNick').value.trim(), password: $('fPass').value, serverPassword: $('fServerPass').value };
     const session = await request(kind, body);
@@ -748,7 +807,7 @@ function ask({ title, fields = [], body = null, okLabel = '확인', onSubmit }) 
   $('modalOk').hidden = !onSubmit;
   const inputs = {};
   $('modalBody').replaceChildren(...fields.map((f) => {
-    const input = inputs[f.key] = el('input', { type: f.type || 'text', placeholder: f.placeholder || '' });
+    const input = inputs[f.key] = el('input', { type: f.type || 'text', placeholder: f.placeholder || '', value: f.value || '' });
     return f.type === 'checkbox' ? el('label', { className: 'check' }, input, f.label) : el('label', {}, f.label, input);
   }), ...(body ? [body] : []));
   $('modal').hidden = false;
@@ -825,6 +884,23 @@ function wire() {
   $('btnLeave').onclick = leaveRoom;
   $('btnReplyCancel').onclick = () => setReply(null);
   $('btnNoticeClear').onclick = clearNotices;
+  $('btnServer').onclick = $('btnBannerServer').onclick = askServer;
+  // 저장된 로그인이 있으면 비밀번호 없이 (바뀐) 주소로 다시 연결
+  $('btnResume').onclick = async () => {
+    $('loginError').textContent = '';
+    try {
+      const url = normalizeUrl($('fUrl').value);
+      await connect(url);
+      const session = await request('login', { token: localStorage.getItem('sb.token') });
+      localStorage.setItem('sb.url', url);
+      await enter(session);
+    } catch (e) {
+      state.ws?.close();
+      $('loginError').textContent = e.code === 'bad_token' ? '저장된 로그인이 이 서버에서는 통하지 않습니다. 닉네임과 비밀번호로 로그인해 주세요.' : e.message;
+    }
+  };
+  // 주 창에서 서버 주소를 바꾸면 1:1 창도 새 주소로 다시 붙는다
+  window.addEventListener('storage', (e) => { if (e.key === 'sb.url' && DM_MODE) state.ws?.close(); });
   $('btnPasteSend').onclick = sendPasted;
   $('btnPasteCancel').onclick = () => { clearPasted(); Editor.focus(); };
   document.addEventListener('paste', (e) => {
@@ -871,7 +947,7 @@ async function start() {
     } catch (e) {
       state.ws?.close();
       if (DM_MODE) return window.close();
-      if (e.code !== 'bad_token') $('loginError').textContent = e.message;
+      if (e.code !== 'bad_token') { $('loginError').textContent = `${e.message} 서버 주소가 바뀌었다면 주소를 고친 뒤 아래 '다시 연결'을 눌러 주세요.`; $('btnResume').hidden = false; }
     }
   }
   $('login').hidden = false;
