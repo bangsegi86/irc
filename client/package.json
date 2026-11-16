@@ -1,6 +1,6 @@
 {
   "name": "sarangbang-client",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "사랑방 채팅 클라이언트",
   "main": "main.js",
   "private": true,

@@ -27,6 +27,11 @@ export function openDb(path) {
       id INTEGER PRIMARY KEY, room_id INTEGER, dm_key TEXT,
       sender_id INTEGER NOT NULL, text TEXT NOT NULL DEFAULT '',
       reply_to INTEGER, file TEXT, ts INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS notices (
+      id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, kind TEXT NOT NULL,
+      room_id INTEGER, msg_id INTEGER, from_id INTEGER NOT NULL,
+      text TEXT NOT NULL DEFAULT '', ts INTEGER NOT NULL);
+    CREATE INDEX IF NOT EXISTS idx_notice_user ON notices(user_id, id);
     CREATE INDEX IF NOT EXISTS idx_msg_room ON messages(room_id, id);
     CREATE INDEX IF NOT EXISTS idx_msg_dm ON messages(dm_key, id);
   `);

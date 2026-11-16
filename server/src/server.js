@@ -5,6 +5,7 @@ import { openDb, hashPassword, verifyPassword, newToken, dmKey } from './db.js';
 const MAX_TEXT = 4000;
 const MAX_CHUNK = 512 * 1024; // 파일 조각 최대 크기
 const OFFER_TIMEOUT_MS = 10_000;
+const MAX_NOTICES = 100; // 사용자당 보관하는 알림 수
 
 class ChatError extends Error {
   constructor(code, message) { super(message); this.code = code; }
@@ -58,6 +59,19 @@ export function startServer({ port = 7070, host = '0.0.0.0', dbPath = ':memory:'
       .map((i) => ({ id: i.id, roomId: i.room_id, roomName: i.room_name, from: i.from_nick }));
   }
 
+  // ---------- 알림 내역(호출): 상대가 꺼져 있어도 다음 접속 때 볼 수 있게 저장한다 ----------
+  const NOTICE_SQL = `SELECT n.id, n.kind, n.room_id, r.name AS room_name, n.msg_id, n.from_id, u.nick AS from_nick, n.text, n.ts
+                      FROM notices n JOIN users u ON u.id = n.from_id LEFT JOIN rooms r ON r.id = n.room_id`;
+  const noticeView = (n) => ({ id: n.id, kind: n.kind, roomId: n.room_id, roomName: n.room_name, msgId: n.msg_id, from: { id: n.from_id, nick: n.from_nick }, text: n.text, ts: n.ts });
+  const noticesFor = (userId) => q(`${NOTICE_SQL} WHERE n.user_id = ? ORDER BY n.id DESC LIMIT ?`).all(userId, MAX_NOTICES).map(noticeView);
+
+  function addNotice(userId, { kind, roomId = null, msgId = null, fromId, text = '' }) {
+    const info = q('INSERT INTO notices (user_id, kind, room_id, msg_id, from_id, text, ts) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run(userId, kind, roomId, msgId, fromId, text.slice(0, 200), now());
+    q('DELETE FROM notices WHERE user_id = ? AND id <= (SELECT id FROM notices WHERE user_id = ? ORDER BY id DESC LIMIT 1 OFFSET ?)').run(userId, userId, MAX_NOTICES);
+    sendUser(userId, { t: 'notice', notice: noticeView(q(`${NOTICE_SQL} WHERE n.id = ?`).get(Number(info.lastInsertRowid))) });
+  }
+
   // ---------- 전송 도우미 ----------
   const send = (conn, obj) => { if (conn.ws.readyState === 1) conn.ws.send(JSON.stringify(obj)); };
   const sendUser = (userId, obj) => { for (const c of online.get(userId) || []) send(c, obj); };
@@ -75,7 +89,7 @@ export function startServer({ port = 7070, host = '0.0.0.0', dbPath = ':memory:'
 
   function sessionPayload(user, token) {
     const rooms = q('SELECT room_id FROM members WHERE user_id = ?').all(user.id).map((r) => roomView(r.room_id));
-    return { user: { id: user.id, nick: user.nick }, token, rooms, invites: invitesFor(user.id) };
+    return { user: { id: user.id, nick: user.nick }, token, rooms, invites: invitesFor(user.id), notices: noticesFor(user.id) };
   }
 
   function endTransfer(id, notify, reason) {
@@ -158,6 +172,7 @@ export function startServer({ port = 7070, host = '0.0.0.0', dbPath = ':memory:'
       sendUser(conn.user.id, { t: 'room.left', roomId: m.roomId });
       if (memberIds(m.roomId).length === 0) {
         q('DELETE FROM messages WHERE room_id = ?').run(m.roomId);
+        q('DELETE FROM notices WHERE room_id = ?').run(m.roomId);
         q('DELETE FROM rooms WHERE id = ?').run(m.roomId); // 아무도 없으면 방 정리
       } else pushRoom(m.roomId);
       return {};
@@ -226,7 +241,7 @@ export function startServer({ port = 7070, host = '0.0.0.0', dbPath = ':memory:'
         const nicks = new Set([...text.matchAll(/@([^\s@]{2,20})/gu)].map((x) => x[1].toLowerCase()));
         if (nicks.size) {
           for (const mem of roomView(roomId).members) {
-            if (mem.id !== conn.user.id && nicks.has(mem.nick.toLowerCase())) sendUser(mem.id, { t: 'mention', msg });
+            if (mem.id !== conn.user.id && nicks.has(mem.nick.toLowerCase())) addNotice(mem.id, { kind: 'mention', roomId, msgId: msg.id, fromId: conn.user.id, text });
           }
         }
       }
@@ -249,13 +264,15 @@ export function startServer({ port = 7070, host = '0.0.0.0', dbPath = ':memory:'
     call(conn, m) {
       const target = userById(m.userId);
       if (!target) fail('no_user', '없는 사용자입니다.');
-      let roomName = null;
-      if (m.roomId != null) {
-        if (!isMember(m.roomId, conn.user.id) || !isMember(m.roomId, target.id)) fail('not_member', '같은 방에 있는 사용자만 호출할 수 있습니다.');
-        roomName = roomView(m.roomId).name;
-      }
-      if (!online.has(target.id)) fail('offline', '상대가 접속 중이 아닙니다.');
-      sendUser(target.id, { t: 'call', from: conn.user, roomId: m.roomId ?? null, roomName });
+      if (target.id === conn.user.id) fail('self', '자기 자신은 호출할 수 없습니다.');
+      if (m.roomId != null && (!isMember(m.roomId, conn.user.id) || !isMember(m.roomId, target.id))) fail('not_member', '같은 방에 있는 사용자만 호출할 수 있습니다.');
+      addNotice(target.id, { kind: 'call', roomId: m.roomId ?? null, fromId: conn.user.id });
+      return { online: online.has(target.id) }; // 꺼져 있으면 다음 접속 때 알림 내역에 나타난다
+    },
+
+    'notice.clear'(conn, m) {
+      if (m.noticeId != null) q('DELETE FROM notices WHERE id = ? AND user_id = ?').run(m.noticeId, conn.user.id);
+      else q('DELETE FROM notices WHERE user_id = ?').run(conn.user.id);
       return {};
     },
 

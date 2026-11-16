@@ -1,5 +1,5 @@
-// 사랑방 클라이언트 메인 프로세스: 창 관리, 파일 읽기/쓰기, 알림
-const { app, BrowserWindow, ipcMain, dialog, shell, Notification } = require('electron');
+// 사랑방 클라이언트 메인 프로세스: 창·트레이·알림 팝업 관리, 파일 읽기/쓰기
+const { app, BrowserWindow, ipcMain, dialog, shell, Tray, Menu, nativeImage, screen } = require('electron');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
@@ -9,9 +9,15 @@ const { randomUUID } = require('node:crypto');
 // P2P 직접 전송이 같은 공유기 안에서도 잘 연결되도록 내부 IP 숨김(mDNS)을 끈다
 app.commandLine.appendSwitch('disable-features', 'WebRtcHideLocalIpsWithMdns');
 
+const TOAST_MS = 5000;       // 알림 팝업이 떠 있는 시간
+const TOAST_SLIDE_MS = 300;  // 올라오고 내려가는 시간
+
 let mainWindow = null;
+let tray = null;
+let toastWindow = null;
+let quitting = false;
 const dmWindows = new Map(); // 상대 ID -> 창
-const saves = new Map();     // 저장 중인 파일: 핸들 -> { fd, path }
+const saves = new Map();     // 저장 중인 파일: 핸들 -> { fh, path }
 let nextSave = 1;
 
 // 파일ID -> 내 PC의 경로 (내가 보낸 원본 또는 내가 받은 사본). 서버에는 파일이 없으므로 이 표가 유일한 위치 정보다.
@@ -33,9 +39,20 @@ async function registerFile(filePath) {
   return { fileId, name, size: st.size, mime: mimeOf(name) };
 }
 
+// 아이콘 파일 없이 쓰는 기본 아이콘(파란 원)
+function appIcon() {
+  const size = 32, buf = Buffer.alloc(size * size * 4);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      if (Math.hypot(x - 15.5, y - 15.5) <= 14) buf.set([0xf5, 0x9c, 0x5b, 0xff], (y * size + x) * 4); // BGRA
+    }
+  }
+  return nativeImage.createFromBitmap(buf, { width: size, height: size });
+}
+
 function createWindow(query, opts) {
   const win = new BrowserWindow({
-    width: 1100, height: 720, minWidth: 420, minHeight: 400, autoHideMenuBar: true,
+    width: 1100, height: 720, minWidth: 420, minHeight: 400, autoHideMenuBar: true, icon: appIcon(),
     ...opts,
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false },
   });
@@ -46,6 +63,13 @@ function createWindow(query, opts) {
   return win;
 }
 
+function showMain() {
+  if (!mainWindow) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
 function openDm(peerId, nick) {
   const existing = dmWindows.get(peerId);
   if (existing) { existing.show(); existing.focus(); return; }
@@ -54,31 +78,86 @@ function openDm(peerId, nick) {
   win.on('closed', () => dmWindows.delete(peerId));
 }
 
-function alertUser(win, title, body) {
-  if (Notification.isSupported()) {
-    const n = new Notification({ title, body });
-    n.on('click', () => { win?.show(); win?.focus(); });
-    n.show();
-  }
-  if (win && !win.isFocused()) win.flashFrame(true);
+const isActive = (win) => !!win && !win.isDestroyed() && win.isVisible() && !win.isMinimized() && win.isFocused();
+
+// 화면 우측 하단에서 올라왔다가 5초 뒤 내려가는 알림 팝업. target: 눌렀을 때 갈 곳
+function showToast(title, body, target) {
+  if (toastWindow && !toastWindow.isDestroyed()) toastWindow.destroy();
+  const { workArea } = screen.getPrimaryDisplay();
+  const width = 360, height = 104;
+  const win = toastWindow = new BrowserWindow({
+    width, height, x: workArea.x + workArea.width - width - 12, y: workArea.y + workArea.height - height,
+    frame: false, transparent: true, resizable: false, movable: false, minimizable: false, maximizable: false,
+    skipTaskbar: true, alwaysOnTop: true, focusable: false, hasShadow: false, show: false,
+    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false },
+  });
+  win.setAlwaysOnTop(true, 'screen-saver');
+  win.toastTarget = target || null;
+  win.loadFile(path.join(__dirname, 'renderer', 'toast.html'), { query: { title: String(title), body: String(body || ''), ms: String(TOAST_MS), slide: String(TOAST_SLIDE_MS) } });
+  win.once('ready-to-show', () => win.showInactive());
+  setTimeout(() => { if (!win.isDestroyed()) win.destroy(); }, TOAST_MS + TOAST_SLIDE_MS * 2 + 200);
+  win.on('closed', () => { if (toastWindow === win) toastWindow = null; });
 }
 
-app.whenReady().then(() => {
+function createTray() {
+  try {
+    tray = new Tray(appIcon());
+    tray.setToolTip('사랑방');
+    tray.setContextMenu(Menu.buildFromTemplate([
+      { label: '사랑방 열기', click: showMain },
+      { type: 'separator' },
+      { label: '종료', click: () => { quitting = true; app.quit(); } },
+    ]));
+    tray.on('click', showMain);
+    tray.on('double-click', showMain);
+  } catch (e) { console.error('트레이 아이콘을 만들지 못했습니다.', e); }
+}
+
+function setup() {
   loadFileMap();
   app.setAppUserModelId('kr.sarangbang.client');
+  createTray();
   mainWindow = createWindow({}, { title: '사랑방' });
-  mainWindow.on('closed', () => app.quit());
+
+  // 창을 닫으면 종료하지 않고 트레이로 들어간다. 완전히 끄려면 트레이 메뉴의 '종료'.
+  let hintShown = false;
+  mainWindow.on('close', (e) => {
+    if (quitting || !tray) return;
+    e.preventDefault();
+    mainWindow.hide();
+    if (!hintShown) { hintShown = true; showToast('사랑방이 트레이에서 실행 중입니다', '호출이 오면 여기에 알려 드립니다. 끄려면 트레이 아이콘을 우클릭해 종료를 누르세요.'); }
+  });
+  mainWindow.on('closed', () => { mainWindow = null; app.quit(); });
 
   ipcMain.handle('dm:open', (_e, peerId, nick) => openDm(Number(peerId), String(nick)));
 
-  // 1:1 메시지가 왔을 때: 창이 열려 있으면 그 창을 깜빡이고 true, 없으면 알림만 띄우고 false
+  // 1:1 메시지가 왔을 때: 그 창을 보고 있지 않으면 팝업. 1:1 창이 열려 있는지 돌려준다.
   ipcMain.handle('dm:incoming', (_e, peerId, nick, preview) => {
     const win = dmWindows.get(Number(peerId));
-    alertUser(win || mainWindow, `${nick} 님의 1:1 메시지`, preview);
+    if (!isActive(win)) {
+      showToast(`${nick} 님의 1:1 메시지`, preview, { dm: Number(peerId), nick: String(nick) });
+      win?.flashFrame(true);
+    }
     return !!win;
   });
 
-  ipcMain.handle('notify', (e, title, body) => alertUser(BrowserWindow.fromWebContents(e.sender), title, body));
+  // opts.onlyIfAway: 주 창을 보고 있지 않을 때(트레이·최소화·다른 프로그램 사용 중)만 팝업
+  // opts.noticeId: 팝업을 누르면 해당 알림의 방으로 이동
+  ipcMain.handle('notify', (e, title, body, opts = {}) => {
+    const sender = BrowserWindow.fromWebContents(e.sender);
+    if (opts.onlyIfAway && isActive(mainWindow)) return;
+    showToast(title, body, opts.noticeId != null ? { noticeId: opts.noticeId } : null);
+    if (sender && sender.isVisible() && !sender.isFocused()) sender.flashFrame(true);
+  });
+
+  ipcMain.handle('toast:click', (e) => {
+    const win = BrowserWindow.fromWebContents(e.sender);
+    const target = win?.toastTarget;
+    win?.destroy();
+    if (target?.dm) return openDm(target.dm, target.nick);
+    showMain();
+    if (target?.noticeId != null) mainWindow?.webContents.send('goto', target);
+  });
 
   ipcMain.handle('file:pick', async (e) => {
     const r = await dialog.showOpenDialog(BrowserWindow.fromWebContents(e.sender), { properties: ['openFile', 'multiSelections'] });
@@ -130,6 +209,14 @@ app.whenReady().then(() => {
 
   ipcMain.handle('file:open', (_e, fileId) => fileMap[fileId] && shell.openPath(fileMap[fileId]));
   ipcMain.handle('file:show', (_e, fileId) => fileMap[fileId] && shell.showItemInFolder(fileMap[fileId]));
-});
+}
 
-app.on('window-all-closed', () => app.quit());
+// 이미 실행 중이면(트레이에 있으면) 새로 띄우지 않고 기존 창을 보여 준다
+if (app.requestSingleInstanceLock()) {
+  app.on('second-instance', showMain);
+  app.on('before-quit', () => { quitting = true; });
+  app.on('window-all-closed', () => { /* 트레이에서 계속 실행 */ });
+  app.whenReady().then(setup);
+} else {
+  app.quit();
+}
