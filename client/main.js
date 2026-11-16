@@ -36,6 +36,23 @@ function setTheme(theme) {
   return t;
 }
 
+// 붙여넣어 보낸 이미지를 두는 폴더: 찾아서 지우기 쉽도록 프로그램 폴더 아래 data\pasted 에 둔다.
+// (소스로 실행하면 client\data\pasted, 설치·포터블 실행 파일이면 실행 파일 옆 data\pasted)
+// 그 위치에 쓸 수 없으면(예: Program Files) 사용자 데이터 폴더로 대신한다.
+function pastedDir() {
+  const base = process.env.SARANGBANG_DATA || path.join(app.isPackaged ? path.dirname(app.getPath('exe')) : __dirname, 'data');
+  const dir = path.join(base, 'pasted');
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.accessSync(dir, fs.constants.W_OK);
+    return dir;
+  } catch {
+    const fallback = path.join(app.getPath('userData'), 'pasted');
+    fs.mkdirSync(fallback, { recursive: true });
+    return fallback;
+  }
+}
+
 const MIME = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp' };
 const mimeOf = (name) => MIME[path.extname(name).slice(1).toLowerCase()] || 'application/octet-stream';
 
@@ -115,6 +132,7 @@ function createTray() {
     tray.setToolTip('사랑방');
     tray.setContextMenu(Menu.buildFromTemplate([
       { label: '사랑방 열기', click: showMain },
+      { label: '붙여넣은 이미지 폴더 열기', click: () => shell.openPath(pastedDir()) },
       { type: 'separator' },
       { label: '종료', click: () => { quitting = true; app.quit(); } },
     ]));
@@ -181,8 +199,7 @@ function setup() {
   ipcMain.handle('file:savePasted', async (_e, bytes, mime) => {
     const ext = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/bmp': 'bmp' }[mime];
     if (!ext || !bytes || bytes.length > 50 * 1024 * 1024) return null;
-    const dir = path.join(app.getPath('userData'), 'pasted');
-    await fsp.mkdir(dir, { recursive: true });
+    const dir = pastedDir();
     const d = new Date(), two = (n) => String(n).padStart(2, '0');
     const base = `붙여넣은 이미지 ${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())} ${two(d.getHours())}${two(d.getMinutes())}${two(d.getSeconds())}`;
     let target = path.join(dir, `${base}.${ext}`);
@@ -235,6 +252,8 @@ function setup() {
   ipcMain.handle('theme:get', () => nativeTheme.themeSource);
   ipcMain.handle('theme:set', (_e, theme) => setTheme(theme));
   ipcMain.handle('clipboard:write', (_e, text) => clipboard.writeText(String(text)));
+  ipcMain.handle('pasted:openFolder', () => shell.openPath(pastedDir()));
+  ipcMain.handle('pasted:dir', () => pastedDir());
   ipcMain.handle('file:open', (_e, fileId) => fileMap[fileId] && shell.openPath(fileMap[fileId]));
   ipcMain.handle('file:show', (_e, fileId) => fileMap[fileId] && shell.showItemInFolder(fileMap[fileId]));
 }

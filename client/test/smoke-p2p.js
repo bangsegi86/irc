@@ -13,6 +13,7 @@ const URL = process.env.SB_URL || 'ws://127.0.0.1:7171';
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), `sb-p2p-${role}-`));
 app.setPath('userData', path.join(tmp, 'user'));
 app.setPath('downloads', path.join(tmp, 'downloads'));
+process.env.SARANGBANG_DATA = path.join(tmp, 'data');
 dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [file] });
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
