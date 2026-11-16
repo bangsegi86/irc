@@ -47,7 +47,7 @@ async function run() {
     const stats = await js(`state.stats`);
     assert.ok(fs.readFileSync(saved).equals(fs.readFileSync(file)), '받은 파일이 원본과 같아야 함');
     assert.deepEqual(stats, { p2p: 1, relay: 0 }, '서버 경유가 아니라 직접 전송이어야 함');
-    await js(`input.value='받았음'; composer.requestSubmit()`);
+    await js(`input.textContent='받았음'; composer.requestSubmit()`);
     await sleep(500);
   }
   console.log(`P2P_OK ${role}`);

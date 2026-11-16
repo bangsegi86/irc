@@ -313,7 +313,7 @@ async function openView(view) {
   state.oldestId = null;
   await loadHistory();
   scrollToBottom();
-  $('input').focus();
+  Editor.focus();
 }
 
 async function loadHistory() {
@@ -357,7 +357,8 @@ function buildMessage(msg) {
   if (msg.replyTo) {
     node.append(el('div', { className: 'quote', title: '원문으로 이동', onclick: () => flashMessage(msg.replyTo.id) }, `↪ ${msg.replyTo.nick}: ${msg.replyTo.text}`));
   }
-  if (msg.text) node.append(el('div', { className: 'text' }, ...textNodes(msg.text)));
+  if (msg.rich) node.append(Editor.renderRich(msg.rich, textNodes));
+  else if (msg.text) node.append(el('div', { className: 'text' }, ...textNodes(msg.text)));
   if (msg.file) {
     const box = el('div', { className: 'file' });
     state.fileBoxes.set(msg.id, box);
@@ -373,18 +374,17 @@ function setReply(msg) {
   $('replyBar').hidden = !msg;
   if (msg) {
     $('replyText').textContent = `↪ ${msg.from.nick} 님에게 답글: ${(msg.text || `[파일] ${msg.file?.name}`).slice(0, 80)}`;
-    $('input').focus();
+    Editor.focus();
   }
 }
 
 async function sendText() {
-  const input = $('input');
-  const text = input.value.trim();
-  if (!text || !state.current) return;
+  const content = Editor.getContent(); // { text } 또는 { rich }
+  if (!content || !state.current) return;
   try {
-    await sendMessage({ text });
-    input.value = '';
-    autoGrow();
+    await sendMessage(content);
+    Editor.clear();
+    Editor.focus();
   } catch (e) { window.api.notify('전송 실패', e.message); }
 }
 
@@ -713,12 +713,6 @@ function leaveRoom() {
 }
 
 // ---------------- 화면 이벤트 ----------------
-function autoGrow() {
-  const input = $('input');
-  input.style.height = 'auto';
-  input.style.height = `${Math.min(input.scrollHeight, 140)}px`;
-}
-
 function wire() {
   $('loginForm').onsubmit = (e) => { e.preventDefault(); doLogin('login'); };
   $('btnRegister').onclick = () => { if ($('loginForm').reportValidity()) doLogin('register'); };
@@ -733,11 +727,7 @@ function wire() {
   $('modalCancel').onclick = closeModal;
   $('btnAttach').onclick = async () => sendFiles(await window.api.pickFiles());
   $('composer').onsubmit = (e) => { e.preventDefault(); sendText(); };
-  $('input').oninput = autoGrow;
-  $('input').onkeydown = (e) => {
-    // 한글 조합 중의 Enter는 전송하지 않는다
-    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendText(); }
-  };
+  Editor.init({ onSend: sendText });
 
   // 파일을 끌어다 놓아 보내기
   const main = document.querySelector('main');

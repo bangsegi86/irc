@@ -2,7 +2,35 @@
 import { WebSocketServer } from 'ws';
 import { openDb, hashPassword, verifyPassword, newToken, dmKey } from './db.js';
 
-const MAX_TEXT = 4000;
+const MAX_TEXT = 20000;
+const RICH_LANGS = new Set(['text', 'sql', 'json', 'javascript', 'python', 'markdown']);
+const RICH_BGS = new Set(['yellow', 'green', 'pink', 'blue']);
+const RICH_SIZES = new Set(['s', 'l', 'xl']);
+
+// 서식 있는 메시지를 허용된 모양으로만 다시 만든다(HTML은 주고받지 않는다).
+// 조각: { s: 글자, b/i/u/x: 굵게/기울임/밑줄/취소선, bg: 배경색, sz: 크기 } 또는 { t: 'code', lang, text }
+function cleanRich(input) {
+  if (!Array.isArray(input) || input.length > 5000) return null;
+  const nodes = [];
+  let formatted = false;
+  for (const n of input) {
+    if (!n || typeof n !== 'object') continue;
+    if (n.t === 'code') {
+      if (typeof n.text !== 'string' || !n.text.trim()) continue;
+      nodes.push({ t: 'code', lang: RICH_LANGS.has(n.lang) ? n.lang : 'text', text: n.text });
+      formatted = true;
+      continue;
+    }
+    if (typeof n.s !== 'string' || !n.s) continue;
+    const run = { s: n.s };
+    for (const k of ['b', 'i', 'u', 'x']) if (n[k]) { run[k] = 1; formatted = true; }
+    if (RICH_BGS.has(n.bg)) { run.bg = n.bg; formatted = true; }
+    if (RICH_SIZES.has(n.sz)) { run.sz = n.sz; formatted = true; }
+    nodes.push(run);
+  }
+  const text = nodes.map((n) => (n.t === 'code' ? `\n${n.text}\n` : n.s)).join('').trim();
+  return { text, rich: formatted ? JSON.stringify(nodes) : null };
+}
 const MAX_CHUNK = 512 * 1024; // 파일 조각 최대 크기
 const OFFER_TIMEOUT_MS = 10_000;
 const MAX_NOTICES = 100; // 사용자당 보관하는 알림 수
@@ -42,6 +70,7 @@ export function startServer({ port = 7070, host = '0.0.0.0', dbPath = ':memory:'
     if (row.room_id) m.roomId = row.room_id;
     else m.dm = row.dm_key.split(':').map(Number);
     if (row.file) m.file = JSON.parse(row.file);
+    if (row.rich) m.rich = JSON.parse(row.rich);
     if (row.reply_to) {
       const o = q('SELECT id, sender_id, text, file FROM messages WHERE id = ?').get(row.reply_to);
       if (o) {
@@ -204,7 +233,10 @@ export function startServer({ port = 7070, host = '0.0.0.0', dbPath = ':memory:'
     },
 
     'msg.send'(conn, m) {
-      const text = String(m.text || '');
+      const cleaned = m.rich ? cleanRich(m.rich) : null;
+      if (m.rich && !cleaned) fail('bad_rich', '메시지 서식이 올바르지 않습니다.');
+      const text = cleaned ? cleaned.text : String(m.text || '');
+      const rich = cleaned ? cleaned.rich : null;
       if (text.length > MAX_TEXT) fail('too_long', `메시지는 ${MAX_TEXT}자까지 보낼 수 있습니다.`);
       let file = null;
       if (m.file) {
@@ -231,8 +263,8 @@ export function startServer({ port = 7070, host = '0.0.0.0', dbPath = ':memory:'
         if (!o || o.room_id !== roomId || o.dm_key !== key) fail('bad_reply', '답글 대상 메시지를 찾을 수 없습니다.');
         replyTo = m.replyTo;
       }
-      const info = q('INSERT INTO messages (room_id, dm_key, sender_id, text, reply_to, file, ts) VALUES (?, ?, ?, ?, ?, ?, ?)')
-        .run(roomId, key, conn.user.id, text, replyTo, file, now());
+      const info = q('INSERT INTO messages (room_id, dm_key, sender_id, text, reply_to, file, ts, rich) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(roomId, key, conn.user.id, text, replyTo, file, now(), rich);
       const msg = msgView(q('SELECT * FROM messages WHERE id = ?').get(Number(info.lastInsertRowid)));
       sendUsers(targets, { t: 'msg', msg });
 
