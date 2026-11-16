@@ -1,0 +1,22 @@
+{
+  "name": "sarangbang-client",
+  "version": "0.1.0",
+  "description": "사랑방 채팅 클라이언트",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win nsis"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "kr.sarangbang.client",
+    "productName": "Sarangbang",
+    "files": ["main.js", "preload.js", "renderer/**/*"],
+    "win": { "target": "nsis" },
+    "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true }
+  }
+}

@@ -1,0 +1,615 @@
+// 사랑방 클라이언트 화면. 주 창과 1:1 창이 같은 코드를 쓴다(?dm=상대ID 이면 1:1 창).
+'use strict';
+
+const $ = (id) => document.getElementById(id);
+const params = new URLSearchParams(location.search);
+const DM_MODE = params.has('dm');
+const CHUNK = 256 * 1024;
+const AUTO_IMAGE_MAX = 20 * 1024 * 1024; // 이 크기 이하 이미지는 자동으로 받는다
+const PAGE = 50;
+
+const state = {
+  me: null, ws: null, nextId: 1, pending: new Map(),
+  rooms: new Map(), users: new Map(), invites: [],
+  current: null,            // { type: 'room' | 'dm', id, nick? }
+  unread: new Map(),        // 'room:1' | 'dm:2' -> 개수
+  replyTo: null, oldestId: null,
+  incoming: new Map(),      // 받는 중인 전송
+  outgoing: new Map(),      // 보내는 중인 전송
+  fileBoxes: new Map(),     // 메시지 ID -> 파일 표시 상자
+  reconnectTimer: null, loggedIn: false,
+};
+
+function el(tag, props = {}, ...children) {
+  const node = Object.assign(document.createElement(tag), props);
+  node.append(...children.filter((c) => c != null));
+  return node;
+}
+const fmtSize = (n) => (n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : n < 1073741824 ? `${(n / 1048576).toFixed(1)} MB` : `${(n / 1073741824).toFixed(2)} GB`);
+const fmtTime = (ts) => new Date(ts).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+const keyOf = (c) => `${c.type}:${c.id}`;
+const peerOf = (msg) => (msg.dm[0] === state.me.id ? msg.dm[1] : msg.dm[0]);
+
+// ---------------- 서버 연결 ----------------
+function connect(url) {
+  return new Promise((resolve, reject) => {
+    let ws;
+    try { ws = new WebSocket(url); } catch { return reject(new Error('서버 주소 형식이 올바르지 않습니다. 예: ws://192.168.0.10:7070')); }
+    ws.binaryType = 'arraybuffer';
+    ws.onopen = () => { state.ws = ws; resolve(); };
+    ws.onerror = () => reject(new Error('서버에 연결할 수 없습니다. 주소와 서버 실행 여부를 확인해 주세요.'));
+    ws.onmessage = (e) => (typeof e.data === 'string' ? onJson(JSON.parse(e.data)) : onBinary(e.data));
+    ws.onclose = () => { if (state.ws === ws) onDisconnect(); };
+  });
+}
+
+function request(t, body = {}) {
+  return new Promise((resolve, reject) => {
+    if (!state.ws || state.ws.readyState !== 1) return reject(new Error('서버와 연결되어 있지 않습니다.'));
+    const id = state.nextId++;
+    state.pending.set(id, { resolve, reject });
+    state.ws.send(JSON.stringify({ t, id, ...body }));
+  });
+}
+const emit = (t, body = {}) => { if (state.ws?.readyState === 1) state.ws.send(JSON.stringify({ t, ...body })); };
+
+function onDisconnect() {
+  for (const p of state.pending.values()) p.reject(new Error('서버와 연결이 끊어졌습니다.'));
+  state.pending.clear();
+  for (const [id, tr] of state.incoming) failIncoming(id, '연결이 끊어졌습니다.');
+  for (const out of state.outgoing.values()) { out.failed = true; out.onAck?.(); }
+  state.outgoing.clear();
+  if (!state.loggedIn) return;
+  $('banner').hidden = false;
+  clearTimeout(state.reconnectTimer);
+  state.reconnectTimer = setTimeout(reconnect, 3000);
+}
+
+async function reconnect() {
+  if (!state.loggedIn) return;
+  try {
+    await connect(localStorage.getItem('sb.url'));
+    await enter(await request('login', { token: localStorage.getItem('sb.token') }));
+  } catch (e) {
+    if (e.code === 'bad_token') return logout();
+    state.reconnectTimer = setTimeout(reconnect, 3000);
+  }
+}
+
+// ---------------- 로그인 ----------------
+async function doLogin(kind) {
+  $('loginError').textContent = '';
+  const url = $('fUrl').value.trim();
+  try {
+    await connect(url);
+    const body = { nick: $('fNick').value.trim(), password: $('fPass').value, serverPassword: $('fServerPass').value };
+    const session = await request(kind, body);
+    localStorage.setItem('sb.url', url);
+    localStorage.setItem('sb.token', session.token);
+    localStorage.setItem('sb.nick', session.user.nick);
+    await enter(session);
+  } catch (e) {
+    $('loginError').textContent = e.message;
+    state.ws?.close();
+  }
+}
+
+function logout() {
+  state.loggedIn = false;
+  clearTimeout(state.reconnectTimer);
+  localStorage.removeItem('sb.token');
+  state.ws?.close();
+  if (DM_MODE) return window.close();
+  $('app').hidden = true;
+  $('login').hidden = false;
+}
+
+async function enter(session) {
+  state.loggedIn = true;
+  state.me = session.user;
+  state.rooms = new Map(session.rooms.map((r) => [r.id, r]));
+  state.invites = session.invites;
+  const { users } = await request('users.list');
+  state.users = new Map(users.map((u) => [u.id, u]));
+  $('login').hidden = true;
+  $('app').hidden = false;
+  $('banner').hidden = true;
+  $('meNick').textContent = state.me.nick;
+
+  if (DM_MODE) {
+    await openView({ type: 'dm', id: Number(params.get('dm')), nick: params.get('nick') });
+  } else {
+    renderSidebar();
+    const cur = state.current && state.rooms.has(state.current.id) ? state.current : null;
+    if (cur) await openView(cur);
+    else if (state.rooms.size) await openView({ type: 'room', id: state.rooms.keys().next().value });
+    else showNoRoom();
+  }
+}
+
+// ---------------- 서버에서 오는 알림 ----------------
+function onJson(m) {
+  if (m.t === 'ok' || m.t === 'err') {
+    const p = state.pending.get(m.id);
+    if (!p) return;
+    state.pending.delete(m.id);
+    return m.t === 'ok' ? p.resolve(m) : p.reject(Object.assign(new Error(m.message), { code: m.code }));
+  }
+  if (!state.me) return;
+  switch (m.t) {
+    case 'msg': return onMessage(m.msg);
+    case 'presence': {
+      const u = state.users.get(m.userId) || { id: m.userId, nick: m.nick };
+      u.online = m.online;
+      state.users.set(u.id, u);
+      for (const r of state.rooms.values()) for (const mem of r.members) if (mem.id === u.id) mem.online = m.online;
+      if (!DM_MODE) { renderSidebar(); renderMembers(); }
+      return;
+    }
+    case 'file.offer': return onFileOffer(m);
+    case 'file.go': return sendFile(m.transferId);
+    case 'file.ack': return state.outgoing.get(m.transferId)?.onAck?.();
+    case 'file.end': return finishIncoming(m.transferId);
+    case 'file.fail': {
+      const out = state.outgoing.get(m.transferId);
+      if (out) { out.failed = true; out.onAck?.(); state.outgoing.delete(m.transferId); }
+      return failIncoming(m.transferId, m.reason);
+    }
+  }
+  if (DM_MODE) return; // 아래는 주 창에서만 처리
+  switch (m.t) {
+    case 'room.update':
+      state.rooms.set(m.room.id, m.room);
+      renderSidebar();
+      if (state.current?.type === 'room' && state.current.id === m.room.id) renderMembers();
+      else if (!state.current) openView({ type: 'room', id: m.room.id });
+      return;
+    case 'room.left':
+      state.rooms.delete(m.roomId);
+      if (state.current?.type === 'room' && state.current.id === m.roomId) showNoRoom();
+      return renderSidebar();
+    case 'invite':
+      if (!state.invites.some((i) => i.id === m.invite.id)) state.invites.push(m.invite);
+      window.api.notify('채팅방 초대', `${m.invite.from} 님이 '${m.invite.roomName}' 방에 초대했습니다.`);
+      return renderSidebar();
+    case 'mention':
+      window.api.notify(`${m.msg.from.nick} 님이 호출했습니다`, m.msg.text.slice(0, 100));
+      return flashMessage(m.msg.id);
+    case 'call':
+      return window.api.notify(`${m.from.nick} 님이 호출했습니다`, m.roomName ? `'${m.roomName}' 방에서 찾고 있어요.` : '1:1 대화에서 찾고 있어요.');
+  }
+}
+
+function onMessage(msg) {
+  const mine = msg.from.id === state.me.id;
+  const view = msg.roomId != null ? { type: 'room', id: msg.roomId } : { type: 'dm', id: peerOf(msg) };
+  const visible = state.current && keyOf(state.current) === keyOf(view);
+  if (visible) { appendMessage(msg); scrollToBottom(); }
+  if (DM_MODE || mine) return;
+  if (view.type === 'dm') {
+    const preview = msg.text || `[파일] ${msg.file?.name}`;
+    window.api.dmIncoming(view.id, msg.from.nick, preview.slice(0, 100)).then((opened) => {
+      if (!opened) { bump(view); renderSidebar(); }
+    });
+  } else if (!visible) { bump(view); renderSidebar(); }
+}
+const bump = (view) => state.unread.set(keyOf(view), (state.unread.get(keyOf(view)) || 0) + 1);
+
+// ---------------- 옆 목록 ----------------
+function renderSidebar() {
+  $('invites').replaceChildren(...state.invites.map((inv) => el('div', { className: 'invite' },
+    el('div', {}, `${inv.from} 님이 '${inv.roomName}' 방에 초대했습니다.`),
+    el('div', { className: 'row' },
+      el('button', { className: 'primary', onclick: () => answerInvite(inv, true) }, '들어가기'),
+      el('button', { onclick: () => answerInvite(inv, false) }, '거절')))));
+
+  $('roomList').replaceChildren(...[...state.rooms.values()].sort((a, b) => a.name.localeCompare(b.name, 'ko')).map((r) => {
+    const n = state.unread.get(`room:${r.id}`);
+    const active = state.current?.type === 'room' && state.current.id === r.id;
+    return el('li', { className: active ? 'active' : '', onclick: () => openView({ type: 'room', id: r.id }) },
+      el('span', {}, r.isPublic ? '#' : '🔒'), el('span', { className: 'name' }, r.name), n ? el('span', { className: 'badge' }, String(n)) : null);
+  }));
+
+  const others = [...state.users.values()].filter((u) => u.id !== state.me.id)
+    .sort((a, b) => (b.online - a.online) || a.nick.localeCompare(b.nick, 'ko'));
+  $('userList').replaceChildren(...others.map((u) => {
+    const n = state.unread.get(`dm:${u.id}`);
+    return el('li', { onclick: () => openDm(u) },
+      el('span', { className: `dot ${u.online ? 'on' : ''}` }), el('span', { className: 'name' }, u.nick), n ? el('span', { className: 'badge' }, String(n)) : null);
+  }));
+}
+
+function openDm(u) {
+  state.unread.delete(`dm:${u.id}`);
+  renderSidebar();
+  window.api.openDm(u.id, u.nick);
+}
+
+async function answerInvite(inv, accept) {
+  try {
+    const r = await request(accept ? 'invite.accept' : 'invite.decline', { inviteId: inv.id });
+    if (accept) { state.rooms.set(r.room.id, r.room); openView({ type: 'room', id: r.room.id }); }
+  } catch (e) { window.api.notify('초대 처리 실패', e.message); }
+  state.invites = state.invites.filter((i) => i.id !== inv.id);
+  renderSidebar();
+}
+
+function renderMembers() {
+  const room = state.current?.type === 'room' ? state.rooms.get(state.current.id) : null;
+  $('members').hidden = !room;
+  if (!room) return;
+  $('memberList').replaceChildren(...room.members.map((m) => el('li', {},
+    el('span', { className: `dot ${m.online ? 'on' : ''}` }),
+    el('span', { className: 'name' }, m.nick + (m.id === room.ownerId ? ' 👑' : '')),
+    m.id !== state.me.id ? el('button', { title: '호출', onclick: () => callUser(m, room) }, '🔔') : null,
+    m.id !== state.me.id ? el('button', { title: '1:1 대화', onclick: () => openDm(m) }, '💬') : null)));
+}
+
+async function callUser(m, room) {
+  try { await request('call', { userId: m.id, roomId: room.id }); }
+  catch (e) { window.api.notify('호출 실패', e.message); }
+}
+
+// ---------------- 대화 화면 ----------------
+function showNoRoom() {
+  state.current = null;
+  $('chatTitle').textContent = '방을 선택하세요';
+  $('btnInvite').hidden = $('btnLeave').hidden = $('composer').hidden = true;
+  $('members').hidden = true;
+  $('messages').replaceChildren(el('p', { className: 'empty' }, "참여 중인 방이 없습니다. 왼쪽의 '＋'로 방을 만들거나 '찾기'로 공개 방에 들어가 보세요."));
+}
+
+async function openView(view) {
+  state.current = view;
+  state.unread.delete(keyOf(view));
+  state.fileBoxes.clear();
+  setReply(null);
+  const isRoom = view.type === 'room';
+  $('chatTitle').textContent = isRoom ? state.rooms.get(view.id)?.name ?? '' : `${view.nick} 님과 1:1 대화`;
+  if (DM_MODE) document.title = `${view.nick} — 1:1 대화`;
+  $('btnInvite').hidden = $('btnLeave').hidden = !isRoom;
+  $('composer').hidden = false;
+  if (!DM_MODE) { renderSidebar(); renderMembers(); }
+  $('messages').replaceChildren();
+  state.oldestId = null;
+  await loadHistory();
+  scrollToBottom();
+  $('input').focus();
+}
+
+async function loadHistory() {
+  const view = state.current;
+  const body = view.type === 'room' ? { roomId: view.id } : { peerId: view.id };
+  let res;
+  try { res = await request('history', { ...body, limit: PAGE, before: state.oldestId || undefined }); }
+  catch { return; }
+  if (state.current !== view) return;
+  const box = $('messages');
+  box.querySelector('.more')?.remove();
+  const before = box.scrollHeight;
+  box.prepend(...res.messages.map(buildMessage));
+  if (res.messages.length) state.oldestId = res.messages[0].id;
+  if (res.messages.length === PAGE) {
+    box.prepend(el('p', { className: 'empty more' }, el('button', { onclick: loadHistory }, '이전 대화 더 보기')));
+  }
+  box.scrollTop += box.scrollHeight - before;
+}
+
+const scrollToBottom = () => { $('messages').scrollTop = $('messages').scrollHeight; };
+const appendMessage = (msg) => $('messages').append(buildMessage(msg));
+
+function flashMessage(id) {
+  const node = document.querySelector(`[data-msg="${id}"]`);
+  if (!node) return;
+  node.scrollIntoView({ block: 'center' });
+  node.classList.add('flash');
+  setTimeout(() => node.classList.remove('flash'), 1500);
+}
+
+function textNodes(text) {
+  // @닉네임을 강조한다. 사용자 입력은 항상 글자로만 넣는다(HTML로 해석하지 않음).
+  return text.split(/(@[^\s@]{2,20})/gu).map((part) => (part.startsWith('@') && part.length > 2 ? el('span', { className: 'mention' }, part) : part));
+}
+
+function buildMessage(msg) {
+  const node = el('div', { className: `msg ${msg.from.id === state.me.id ? 'mine' : ''}` });
+  node.dataset.msg = msg.id;
+  node.append(el('div', { className: 'head' }, el('span', { className: 'nick' }, msg.from.nick), el('span', { className: 'time' }, fmtTime(msg.ts))));
+  if (msg.replyTo) {
+    node.append(el('div', { className: 'quote', title: '원문으로 이동', onclick: () => flashMessage(msg.replyTo.id) }, `↪ ${msg.replyTo.nick}: ${msg.replyTo.text}`));
+  }
+  if (msg.text) node.append(el('div', { className: 'text' }, ...textNodes(msg.text)));
+  if (msg.file) {
+    const box = el('div', { className: 'file' });
+    state.fileBoxes.set(msg.id, box);
+    node.append(box);
+    renderFile(msg, box, true);
+  }
+  node.append(el('button', { className: 'replyBtn', onclick: () => setReply(msg) }, '답글'));
+  return node;
+}
+
+function setReply(msg) {
+  state.replyTo = msg;
+  $('replyBar').hidden = !msg;
+  if (msg) {
+    $('replyText').textContent = `↪ ${msg.from.nick} 님에게 답글: ${(msg.text || `[파일] ${msg.file?.name}`).slice(0, 80)}`;
+    $('input').focus();
+  }
+}
+
+async function sendText() {
+  const input = $('input');
+  const text = input.value.trim();
+  if (!text || !state.current) return;
+  try {
+    await sendMessage({ text });
+    input.value = '';
+    autoGrow();
+  } catch (e) { window.api.notify('전송 실패', e.message); }
+}
+
+async function sendMessage(body) {
+  const view = state.current;
+  const target = view.type === 'room' ? { roomId: view.id } : { toUserId: view.id };
+  await request('msg.send', { ...target, ...body, replyTo: state.replyTo?.id });
+  setReply(null);
+}
+
+async function sendFiles(files) {
+  for (const file of files) {
+    if (!file) continue;
+    try { await sendMessage({ file }); }
+    catch (e) { window.api.notify('파일 전송 실패', e.message); }
+  }
+}
+
+// ---------------- 파일: 표시 ----------------
+async function renderFile(msg, box, allowAuto) {
+  const f = msg.file;
+  const mine = msg.from.id === state.me.id;
+  const isImage = f.mime.startsWith('image/');
+  const local = await window.api.localFile(f.fileId);
+  const label = el('div', { className: 'fname' }, `${isImage ? '🖼' : '📄'} ${f.name} `, el('small', {}, fmtSize(f.size)));
+  const status = el('div', { className: 'status' });
+
+  if (local) {
+    const open = () => window.api.openFile(f.fileId);
+    box.replaceChildren(label);
+    if (isImage) box.append(el('img', { src: local.url, alt: f.name, title: '눌러서 열기', onclick: open, onload: keepBottom }));
+    box.append(el('div', { className: 'row' }, el('button', { onclick: open }, '열기'), el('button', { onclick: () => window.api.showFile(f.fileId) }, '폴더 보기')));
+    return;
+  }
+  if (mine) {
+    status.textContent = '이 PC에 원본 파일이 없어 다른 사람이 받을 수 없습니다.';
+    box.replaceChildren(label, status);
+    return;
+  }
+  box.replaceChildren(label, status, el('div', { className: 'row' }, el('button', { onclick: () => download(msg, box) }, '받기')));
+  if (allowAuto && isImage && f.size <= AUTO_IMAGE_MAX && state.users.get(msg.from.id)?.online) download(msg, box, true);
+}
+
+function keepBottom() {
+  const box = $('messages');
+  if (box.scrollHeight - box.scrollTop - box.clientHeight < 400) scrollToBottom();
+}
+
+function setStatus(box, text, bad) {
+  const s = box.querySelector('.status');
+  if (s) { s.textContent = text; s.classList.toggle('bad', !!bad); }
+}
+
+// ---------------- 파일: 받기 ----------------
+async function download(msg, box, quiet) {
+  if ([...state.incoming.values()].some((t) => t.msg.id === msg.id)) return;
+  box.querySelector('.row')?.remove();
+  setStatus(box, '보낸 사람 PC에 요청하는 중…');
+  const handle = await window.api.saveStart(msg.file.name);
+  try {
+    const { transferId } = await request('file.request', { msgId: msg.id });
+    state.incoming.set(transferId, { msg, handle, received: 0, chain: Promise.resolve() });
+  } catch (e) {
+    await window.api.saveAbort(handle);
+    await renderFile(msg, state.fileBoxes.get(msg.id) || box, false);
+    if (!quiet) setStatus(state.fileBoxes.get(msg.id) || box, e.message, true);
+  }
+}
+
+function onBinary(buffer) {
+  const transferId = new DataView(buffer).getUint32(0);
+  const tr = state.incoming.get(transferId);
+  if (!tr) return;
+  const chunk = new Uint8Array(buffer, 4);
+  tr.chain = tr.chain.then(async () => {
+    await window.api.saveChunk(tr.handle, chunk);
+    tr.received += chunk.length;
+    const box = state.fileBoxes.get(tr.msg.id);
+    if (box) setStatus(box, `받는 중… ${fmtSize(tr.received)} / ${fmtSize(tr.msg.file.size)} (${Math.floor((tr.received / Math.max(tr.msg.file.size, 1)) * 100)}%)`);
+    emit('file.ack', { transferId }); // 받았다고 알려야 다음 조각이 온다
+  }).catch(() => { emit('file.cancel', { transferId }); failIncoming(transferId, '파일을 저장하지 못했습니다.'); });
+}
+
+function finishIncoming(transferId) {
+  const tr = state.incoming.get(transferId);
+  if (!tr) return;
+  tr.chain.then(async () => {
+    state.incoming.delete(transferId);
+    await window.api.saveEnd(tr.handle, tr.msg.file.fileId);
+    const box = state.fileBoxes.get(tr.msg.id);
+    if (box) renderFile(tr.msg, box, false);
+  });
+}
+
+async function failIncoming(transferId, reason) {
+  const tr = state.incoming.get(transferId);
+  if (!tr) return;
+  state.incoming.delete(transferId);
+  await window.api.saveAbort(tr.handle);
+  const box = state.fileBoxes.get(tr.msg.id);
+  if (box) { await renderFile(tr.msg, box, false); setStatus(box, reason || '전송에 실패했습니다.', true); }
+}
+
+// ---------------- 파일: 보내기(상대가 받기를 눌렀을 때) ----------------
+async function onFileOffer({ transferId, fileId }) {
+  const local = await window.api.localFile(fileId);
+  try {
+    if (!local) return await request('file.reject', { transferId });
+    state.outgoing.set(transferId, { fileId, failed: false, onAck: null });
+    await request('file.accept', { transferId });
+  } catch { state.outgoing.delete(transferId); } // 다른 창이 먼저 맡은 경우
+}
+
+async function sendFile(transferId) {
+  const out = state.outgoing.get(transferId);
+  if (!out) return;
+  try {
+    for (let offset = 0; !out.failed;) {
+      const chunk = await window.api.readFile(out.fileId, offset, CHUNK);
+      if (chunk.length === 0) break;
+      const frame = new Uint8Array(4 + chunk.length);
+      new DataView(frame.buffer).setUint32(0, transferId);
+      frame.set(chunk, 4);
+      const acked = new Promise((resolve) => { out.onAck = resolve; });
+      state.ws.send(frame);
+      await acked; // 한 번에 한 조각: 서버 메모리에 쌓이지 않게 한다
+      offset += chunk.length;
+      if (chunk.length < CHUNK) break;
+    }
+    if (!out.failed) emit('file.end', { transferId });
+  } catch {
+    emit('file.cancel', { transferId });
+  } finally { state.outgoing.delete(transferId); }
+}
+
+// ---------------- 입력 창(모달) ----------------
+function ask({ title, fields = [], body = null, okLabel = '확인', onSubmit }) {
+  $('modalTitle').textContent = title;
+  $('modalError').textContent = '';
+  $('modalOk').textContent = okLabel;
+  $('modalOk').hidden = !onSubmit;
+  const inputs = {};
+  $('modalBody').replaceChildren(...fields.map((f) => {
+    const input = inputs[f.key] = el('input', { type: f.type || 'text', placeholder: f.placeholder || '' });
+    return f.type === 'checkbox' ? el('label', { className: 'check' }, input, f.label) : el('label', {}, f.label, input);
+  }), ...(body ? [body] : []));
+  $('modal').hidden = false;
+  Object.values(inputs)[0]?.focus();
+  $('modalForm').onsubmit = async (e) => {
+    e.preventDefault();
+    if (!onSubmit) return;
+    const values = Object.fromEntries(Object.entries(inputs).map(([k, i]) => [k, i.type === 'checkbox' ? i.checked : i.value.trim()]));
+    try { await onSubmit(values); closeModal(); } catch (err) { $('modalError').textContent = err.message; }
+  };
+}
+const closeModal = () => { $('modal').hidden = true; };
+
+function createRoom() {
+  ask({
+    title: '방 만들기', okLabel: '만들기',
+    fields: [{ key: 'name', label: '방 이름', placeholder: '예: 주말 모임' }, { key: 'isPublic', type: 'checkbox', label: '공개 방 (누구나 찾아서 들어올 수 있음)' }],
+    onSubmit: async (v) => {
+      const { room } = await request('room.create', v);
+      state.rooms.set(room.id, room);
+      await openView({ type: 'room', id: room.id });
+    },
+  });
+}
+
+async function browseRooms() {
+  const list = el('ul', { className: 'pick' });
+  ask({ title: '공개 방 찾기', body: list });
+  try {
+    const { rooms } = await request('room.list');
+    if (!rooms.length) list.append(el('li', {}, '아직 공개 방이 없습니다.'));
+    for (const r of rooms) {
+      list.append(el('li', {}, el('span', {}, `# ${r.name} `, el('small', {}, `${r.members}명`)),
+        r.joined ? el('small', {}, '참여 중') : el('button', {
+          onclick: async () => {
+            try {
+              const { room } = await request('room.join', { roomId: r.id });
+              state.rooms.set(room.id, room);
+              closeModal();
+              await openView({ type: 'room', id: room.id });
+            } catch (e) { $('modalError').textContent = e.message; }
+          },
+        }, '들어가기')));
+    }
+  } catch (e) { $('modalError').textContent = e.message; }
+}
+
+function inviteUser() {
+  const room = state.rooms.get(state.current.id);
+  ask({
+    title: `'${room.name}' 방에 초대`, okLabel: '초대',
+    fields: [{ key: 'nick', label: '초대할 사람의 닉네임' }],
+    onSubmit: (v) => request('room.invite', { roomId: room.id, nick: v.nick }),
+  });
+}
+
+function leaveRoom() {
+  const room = state.rooms.get(state.current.id);
+  ask({
+    title: `'${room.name}' 방에서 나갈까요?`, okLabel: '나가기',
+    body: el('p', {}, '마지막 사람이 나가면 방과 대화 기록이 삭제됩니다.'),
+    onSubmit: () => request('room.leave', { roomId: room.id }),
+  });
+}
+
+// ---------------- 화면 이벤트 ----------------
+function autoGrow() {
+  const input = $('input');
+  input.style.height = 'auto';
+  input.style.height = `${Math.min(input.scrollHeight, 140)}px`;
+}
+
+function wire() {
+  $('loginForm').onsubmit = (e) => { e.preventDefault(); doLogin('login'); };
+  $('btnRegister').onclick = () => { if ($('loginForm').reportValidity()) doLogin('register'); };
+  $('btnLogout').onclick = logout;
+  $('btnCreate').onclick = createRoom;
+  $('btnBrowse').onclick = browseRooms;
+  $('btnInvite').onclick = inviteUser;
+  $('btnLeave').onclick = leaveRoom;
+  $('btnReplyCancel').onclick = () => setReply(null);
+  $('modalCancel').onclick = closeModal;
+  $('btnAttach').onclick = async () => sendFiles(await window.api.pickFiles());
+  $('composer').onsubmit = (e) => { e.preventDefault(); sendText(); };
+  $('input').oninput = autoGrow;
+  $('input').onkeydown = (e) => {
+    // 한글 조합 중의 Enter는 전송하지 않는다
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendText(); }
+  };
+
+  // 파일을 끌어다 놓아 보내기
+  const main = document.querySelector('main');
+  main.ondragover = (e) => { e.preventDefault(); if (state.current) main.classList.add('dragging'); };
+  main.ondragleave = () => main.classList.remove('dragging');
+  main.ondrop = async (e) => {
+    e.preventDefault();
+    main.classList.remove('dragging');
+    if (!state.current) return;
+    sendFiles(await Promise.all([...e.dataTransfer.files].map((f) => window.api.registerDropped(f))));
+  };
+}
+
+async function start() {
+  wire();
+  if (DM_MODE) document.body.classList.add('dm');
+  const url = localStorage.getItem('sb.url');
+  const token = localStorage.getItem('sb.token');
+  $('fUrl').value = url || 'ws://localhost:7070';
+  $('fNick').value = localStorage.getItem('sb.nick') || '';
+  if (url && token) {
+    try {
+      await connect(url);
+      return await enter(await request('login', { token }));
+    } catch (e) {
+      state.ws?.close();
+      if (DM_MODE) return window.close();
+      if (e.code !== 'bad_token') $('loginError').textContent = e.message;
+    }
+  }
+  $('login').hidden = false;
+}
+
+start();
