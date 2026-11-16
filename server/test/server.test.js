@@ -156,3 +156,27 @@ test('보낸 쪽에 원본이 없으면 실패 알림', async () => {
   assert.equal((await b.next('file.fail')).transferId, transferId);
   await Promise.all([a.close(), b.close()]);
 });
+
+test('P2P 신호 전달: 당사자끼리만 오가고, 완료 알림 후 전송이 정리된다', async () => {
+  const a = await user('직접보냄'), b = await user('직접받음'), c = await user('엿보는이');
+  const { msg } = await a.req('msg.send', { toUserId: b.me.id, file: { fileId: 'p2p', name: 'big.iso', size: 10 } });
+  const { transferId } = await b.req('file.request', { msgId: msg.id, p2p: true });
+  assert.equal((await a.next('file.offer')).p2p, true);
+  await a.req('file.accept', { transferId });
+  assert.equal((await a.next('file.go')).p2p, true);
+
+  a.emit('file.signal', { transferId, data: { sdp: 'offer' } });
+  assert.deepEqual((await b.next('file.signal')).data, { sdp: 'offer' });
+  b.emit('file.signal', { transferId, data: { sdp: 'answer' } });
+  assert.deepEqual((await a.next('file.signal')).data, { sdp: 'answer' });
+
+  c.emit('file.signal', { transferId, data: { sdp: 'evil' } }); // 제3자의 신호는 무시
+  c.emit('file.done', { transferId });
+  a.emit('file.signal', { transferId, data: { n: 2 } });
+  assert.deepEqual((await b.next('file.signal')).data, { n: 2 });
+
+  b.emit('file.done', { transferId });
+  await b.req('users.list'); // 서버가 file.done 을 처리할 때까지 기다림
+  await assert.rejects(a.req('file.accept', { transferId }), { code: 'no_transfer' });
+  await Promise.all([a.close(), b.close(), c.close()]);
+});
