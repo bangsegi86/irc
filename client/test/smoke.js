@@ -11,6 +11,7 @@ const URL = process.env.SB_URL || 'ws://127.0.0.1:7171';
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-smoke-'));
 app.setPath('userData', path.join(tmp, 'user'));
 app.setPath('downloads', path.join(tmp, 'downloads'));
+process.env.SARANGBANG_DATA = path.join(tmp, 'data'); // 점검 중 만든 이미지가 실제 프로그램 폴더에 쌓이지 않게
 const shots = process.env.SB_SHOTS || tmp;
 
 const step = (name) => { if (process.env.SB_VERBOSE) console.log(`STEP ${name}`); };
@@ -229,6 +230,7 @@ async function run() {
   const pastedMsg = (await b.next('msg', (e) => e.msg.file?.mime === 'image/png')).msg;
   assert.match(pastedMsg.file.name, /^붙여넣은 이미지 \d{4}-\d{2}-\d{2} \d{6}\.png$/);
   assert.equal(pastedMsg.file.size, pastedSize);
+  assert.ok(fs.existsSync(path.join(tmp, 'data', 'pasted', pastedMsg.file.name)), '붙여넣은 이미지는 프로그램 data\\pasted 폴더에 저장되어야 함');
   await until(() => js(win, `pasteBar.hidden && [...document.querySelectorAll('.file img')].some((i) => i.naturalWidth === 120)`), '보낸 이미지가 대화창에 표시, 미리보기 닫힘');
   got.length = 0;
   b.events.splice(0, b.events.length, ...b.events.filter((e) => e.t !== 'file.end')); // 앞 단계의 완료 알림 비우기
