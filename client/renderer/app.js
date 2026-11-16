@@ -19,6 +19,7 @@ const state = {
   current: null,            // { type: 'room' | 'dm', id, nick? }
   unread: new Map(),        // 'room:1' | 'dm:2' -> 개수
   replyTo: null, oldestId: null,
+  pasted: [],               // 붙여넣고 아직 보내지 않은 이미지: { file, url }
   incoming: new Map(),      // 받는 중인 전송
   outgoing: new Map(),      // 보내는 중인 전송
   fileBoxes: new Map(),     // 메시지 ID -> 파일 표시 상자
@@ -338,6 +339,7 @@ async function openView(view) {
   state.unread.delete(keyOf(view));
   state.fileBoxes.clear();
   setReply(null);
+  clearPasted(); // 다른 방으로 잘못 보내지 않도록 비운다
   const isRoom = view.type === 'room';
   $('chatTitle').textContent = isRoom ? state.rooms.get(view.id)?.name ?? '' : `${view.nick} 님과 1:1 대화`;
   $('chatSub').textContent = '';
@@ -435,6 +437,7 @@ function setReply(msg) {
 }
 
 async function sendText() {
+  if (state.pasted.length) await sendPasted(); // 미리보기 중인 이미지가 있으면 함께 보낸다
   const content = Editor.getContent(); // { text } 또는 { rich }
   if (!content || !state.current) return;
   try {
@@ -457,6 +460,49 @@ async function sendFiles(files) {
     try { await sendMessage({ file }); }
     catch (e) { window.api.notify('파일 전송 실패', e.message); }
   }
+}
+
+// ---------------- 붙여넣은 이미지: 입력란 위 미리보기 → 전송 / 취소 ----------------
+function addPasted(files) {
+  for (const file of files) state.pasted.push({ file, url: URL.createObjectURL(file) });
+  renderPasted();
+  Editor.focus();
+}
+
+function removePasted(item) {
+  URL.revokeObjectURL(item.url);
+  state.pasted = state.pasted.filter((p) => p !== item);
+  renderPasted();
+}
+
+function clearPasted() {
+  for (const p of state.pasted) URL.revokeObjectURL(p.url);
+  state.pasted = [];
+  renderPasted();
+}
+
+function renderPasted() {
+  $('pasteBar').hidden = !state.pasted.length;
+  $('pasteLabel').textContent = `이미지 ${state.pasted.length}장을 보낼까요?`;
+  $('pasteThumbs').replaceChildren(...state.pasted.map((p) => el('div', { className: 'thumb' },
+    el('img', { src: p.url, alt: '붙여넣은 이미지 미리보기' }),
+    el('button', { type: 'button', title: '이 이미지 빼기', ariaLabel: '이 이미지 빼기', onclick: () => removePasted(p) }, '✕'))));
+}
+
+async function sendPasted() {
+  const items = state.pasted;
+  state.pasted = []; // 두 번 눌러도 한 번만 보낸다
+  renderPasted();
+  for (const { file, url } of items) {
+    try {
+      // 탐색기에서 복사한 파일은 그 파일을 그대로, 캡처 화면처럼 파일이 없는 이미지는 이 PC에 저장한 뒤 보낸다
+      const meta = window.api.pathOf(file) ? await window.api.registerDropped(file) : await window.api.savePasted(new Uint8Array(await file.arrayBuffer()), file.type);
+      if (!meta) throw new Error('이미지를 저장하지 못했습니다. (지원 형식: PNG, JPG, GIF, WEBP, BMP · 50MB 이하)');
+      await sendMessage({ file: meta });
+    } catch (e) { window.api.notify('이미지 전송 실패', e.message); }
+    URL.revokeObjectURL(url);
+  }
+  Editor.focus();
 }
 
 // ---------------- 파일: 표시 ----------------
@@ -779,6 +825,15 @@ function wire() {
   $('btnLeave').onclick = leaveRoom;
   $('btnReplyCancel').onclick = () => setReply(null);
   $('btnNoticeClear').onclick = clearNotices;
+  $('btnPasteSend').onclick = sendPasted;
+  $('btnPasteCancel').onclick = () => { clearPasted(); Editor.focus(); };
+  document.addEventListener('paste', (e) => {
+    const images = Editor.imagesIn(e);
+    if (!images.length || !state.current || !$('modal').hidden) return;
+    e.preventDefault();
+    addPasted(images);
+  });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && state.pasted.length) { clearPasted(); Editor.focus(); } });
   // 화면 밝기: 시스템 설정 따르기 → 밝게 → 어둡게 순으로 바뀐다
   const THEMES = { system: '시스템', light: '밝게', dark: '어둡게' };
   const showTheme = (t) => { $('btnTheme').textContent = THEMES[t] || THEMES.system; };

@@ -2,7 +2,7 @@
 <html lang="ko">
 <head>
   <meta charset="utf-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' file: data:; connect-src ws: wss:; style-src 'self' 'unsafe-inline'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' file: data: blob:; connect-src ws: wss:; style-src 'self' 'unsafe-inline'">
   <title>사랑방</title>
   <link rel="stylesheet" href="style.css">
 </head>
@@ -58,6 +58,13 @@
       <div id="messages"></div>
       <div id="replyBar" hidden><span id="replyText"></span><button id="btnReplyCancel" class="ghost" aria-label="답글 취소">✕</button></div>
       <form id="composer" hidden>
+        <div id="pasteBar" hidden>
+          <div id="pasteThumbs"></div>
+          <span id="pasteLabel"></span>
+          <span class="grow"></span>
+          <button type="button" id="btnPasteSend" class="primary" title="이미지 전송 (Enter)">전송</button>
+          <button type="button" id="btnPasteCancel" title="취소 (Esc)">취소</button>
+        </div>
         <div id="toolbar">
           <button type="button" class="fmt" data-cmd="bold" title="굵게 (Ctrl+B)"><b>가</b></button>
           <button type="button" class="fmt" data-cmd="italic" title="기울임 (Ctrl+I)"><i>가</i></button>

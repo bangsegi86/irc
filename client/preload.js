@@ -10,6 +10,8 @@ contextBridge.exposeInMainWorld('api', {
   onGoto: (handler) => ipcRenderer.on('goto', (_e, target) => handler(target)),
   pickFiles: call('file:pick'),
   registerDropped: (file) => ipcRenderer.invoke('file:register', webUtils.getPathForFile(file)),
+  pathOf: (file) => webUtils.getPathForFile(file),
+  savePasted: call('file:savePasted'),
   localFile: call('file:local'),
   readFile: call('file:read'),
   saveStart: call('file:saveStart'),
