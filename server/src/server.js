@@ -269,10 +269,10 @@ export function startServer({ port = 7070, host = '0.0.0.0', dbPath = ':memory:'
       if (!senders.length) fail('sender_offline', '보낸 사람이 접속 중이 아니어서 지금은 받을 수 없습니다.');
       const id = nextTransferId++;
       const file = JSON.parse(row.file);
-      const tr = { receiver: conn, sender: null, offered: senders.length, rejected: 0 };
+      const tr = { receiver: conn, sender: null, offered: senders.length, rejected: 0, p2p: !!m.p2p };
       tr.timer = setTimeout(() => { if (!tr.sender) endTransfer(id, [conn], '보낸 사람 쪽에서 응답이 없습니다.'); }, OFFER_TIMEOUT_MS);
       transfers.set(id, tr);
-      for (const c of senders) send(c, { t: 'file.offer', transferId: id, fileId: file.fileId });
+      for (const c of senders) send(c, { t: 'file.offer', transferId: id, fileId: file.fileId, p2p: tr.p2p });
       return { transferId: id, file };
     },
 
@@ -281,7 +281,7 @@ export function startServer({ port = 7070, host = '0.0.0.0', dbPath = ':memory:'
       if (!tr || tr.sender) fail('no_transfer', '이미 처리된 전송입니다.');
       tr.sender = conn;
       clearTimeout(tr.timer);
-      send(conn, { t: 'file.go', transferId: m.transferId });
+      send(conn, { t: 'file.go', transferId: m.transferId, p2p: tr.p2p });
       return {};
     },
 
@@ -304,6 +304,20 @@ export function startServer({ port = 7070, host = '0.0.0.0', dbPath = ':memory:'
       }
     },
 
+    // P2P 직접 전송: 서버는 두 PC가 서로를 찾기 위한 연결 정보만 전달한다(파일 내용은 지나가지 않음)
+    'file.signal'(conn, m) {
+      const tr = transfers.get(m.transferId);
+      if (!tr || !tr.sender) return;
+      if (tr.sender === conn) send(tr.receiver, { t: 'file.signal', transferId: m.transferId, data: m.data });
+      else if (tr.receiver === conn) send(tr.sender, { t: 'file.signal', transferId: m.transferId, data: m.data });
+    },
+
+    // 직접 전송이 끝났음을 알림 → 전송 기록만 정리
+    'file.done'(conn, m) {
+      const tr = transfers.get(m.transferId);
+      if (tr && (tr.sender === conn || tr.receiver === conn)) endTransfer(m.transferId, []);
+    },
+
     'file.cancel'(conn, m) {
       const tr = transfers.get(m.transferId);
       if (tr && (tr.sender === conn || tr.receiver === conn)) {
@@ -312,7 +326,7 @@ export function startServer({ port = 7070, host = '0.0.0.0', dbPath = ':memory:'
     },
   };
 
-  const NO_REPLY = new Set(['file.ack', 'file.end', 'file.cancel']);
+  const NO_REPLY = new Set(['file.ack', 'file.end', 'file.cancel', 'file.signal', 'file.done']);
 
   wss.on('connection', (ws) => {
     const conn = { ws, user: null };

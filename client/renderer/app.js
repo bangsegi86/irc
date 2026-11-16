@@ -7,6 +7,10 @@ const DM_MODE = params.has('dm');
 const CHUNK = 256 * 1024;
 const AUTO_IMAGE_MAX = 20 * 1024 * 1024; // 이 크기 이하 이미지는 자동으로 받는다
 const PAGE = 50;
+const DC_CHUNK = 64 * 1024;          // 직접 전송 한 조각
+const DC_HIGH = 4 * 1024 * 1024;     // 이만큼 쌓이면 잠시 멈춘다
+const P2P_TIMEOUT = 8000;            // 이 시간 안에 직접 연결이 안 되면 서버 경유로 바꾼다
+const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
 
 const state = {
   me: null, ws: null, nextId: 1, pending: new Map(),
@@ -18,6 +22,7 @@ const state = {
   outgoing: new Map(),      // 보내는 중인 전송
   fileBoxes: new Map(),     // 메시지 ID -> 파일 표시 상자
   reconnectTimer: null, loggedIn: false,
+  stats: { p2p: 0, relay: 0 },  // 받은 파일 수(전송 방식별)
 };
 
 function el(tag, props = {}, ...children) {
@@ -57,7 +62,7 @@ function onDisconnect() {
   for (const p of state.pending.values()) p.reject(new Error('서버와 연결이 끊어졌습니다.'));
   state.pending.clear();
   for (const [id, tr] of state.incoming) failIncoming(id, '연결이 끊어졌습니다.');
-  for (const out of state.outgoing.values()) { out.failed = true; out.onAck?.(); }
+  for (const out of state.outgoing.values()) abortOutgoing(out);
   state.outgoing.clear();
   if (!state.loggedIn) return;
   $('banner').hidden = false;
@@ -147,12 +152,13 @@ function onJson(m) {
       return;
     }
     case 'file.offer': return onFileOffer(m);
-    case 'file.go': return sendFile(m.transferId);
+    case 'file.go': return m.p2p && window.RTCPeerConnection ? sendFileP2P(m.transferId) : sendFile(m.transferId);
+    case 'file.signal': return onFileSignal(m);
     case 'file.ack': return state.outgoing.get(m.transferId)?.onAck?.();
     case 'file.end': return finishIncoming(m.transferId);
     case 'file.fail': {
       const out = state.outgoing.get(m.transferId);
-      if (out) { out.failed = true; out.onAck?.(); state.outgoing.delete(m.transferId); }
+      if (out) { abortOutgoing(out); state.outgoing.delete(m.transferId); }
       return failIncoming(m.transferId, m.reason);
     }
   }
@@ -406,8 +412,8 @@ async function download(msg, box, quiet) {
   setStatus(box, '보낸 사람 PC에 요청하는 중…');
   const handle = await window.api.saveStart(msg.file.name);
   try {
-    const { transferId } = await request('file.request', { msgId: msg.id });
-    state.incoming.set(transferId, { msg, handle, received: 0, chain: Promise.resolve() });
+    const { transferId } = await request('file.request', { msgId: msg.id, p2p: !!window.RTCPeerConnection });
+    state.incoming.set(transferId, { msg, handle, received: 0, chain: Promise.resolve(), sig: Promise.resolve(), pc: null, direct: false });
   } catch (e) {
     await window.api.saveAbort(handle);
     await renderFile(msg, state.fileBoxes.get(msg.id) || box, false);
@@ -415,35 +421,153 @@ async function download(msg, box, quiet) {
   }
 }
 
-function onBinary(buffer) {
+function onBinary(buffer) { // 서버 경유로 온 조각
   const transferId = new DataView(buffer).getUint32(0);
   const tr = state.incoming.get(transferId);
   if (!tr) return;
-  const chunk = new Uint8Array(buffer, 4);
+  closePeer(tr); // 서버 경유로 오기 시작했으면 직접 연결 시도는 접는다
+  writeChunk(transferId, tr, new Uint8Array(buffer, 4), false);
+}
+
+function writeChunk(transferId, tr, chunk, direct) {
   tr.chain = tr.chain.then(async () => {
     await window.api.saveChunk(tr.handle, chunk);
     tr.received += chunk.length;
     const box = state.fileBoxes.get(tr.msg.id);
-    if (box) setStatus(box, `받는 중… ${fmtSize(tr.received)} / ${fmtSize(tr.msg.file.size)} (${Math.floor((tr.received / Math.max(tr.msg.file.size, 1)) * 100)}%)`);
-    emit('file.ack', { transferId }); // 받았다고 알려야 다음 조각이 온다
+    const pct = Math.floor((tr.received / Math.max(tr.msg.file.size, 1)) * 100);
+    if (box) setStatus(box, `받는 중… ${fmtSize(tr.received)} / ${fmtSize(tr.msg.file.size)} (${pct}%) · ${direct ? '직접 전송' : '서버 경유'}`);
+    if (!direct) emit('file.ack', { transferId }); // 받았다고 알려야 다음 조각이 온다
   }).catch(() => { emit('file.cancel', { transferId }); failIncoming(transferId, '파일을 저장하지 못했습니다.'); });
 }
 
-function finishIncoming(transferId) {
+function finishIncoming(transferId, direct) {
   const tr = state.incoming.get(transferId);
   if (!tr) return;
   tr.chain.then(async () => {
-    state.incoming.delete(transferId);
+    if (!state.incoming.delete(transferId)) return;
     await window.api.saveEnd(tr.handle, tr.msg.file.fileId);
+    if (direct) emit('file.done', { transferId });
+    closePeer(tr);
+    state.stats[direct ? 'p2p' : 'relay']++;
     const box = state.fileBoxes.get(tr.msg.id);
     if (box) renderFile(tr.msg, box, false);
   });
+}
+
+function closePeer(tr) {
+  const pc = tr.pc;
+  tr.pc = null;
+  try { pc?.close(); } catch { /* 이미 닫힘 */ }
+}
+
+// ---------------- 파일: P2P 직접 전송 ----------------
+// 서버는 연결 정보(file.signal)만 전달하고, 파일 내용은 두 PC 사이를 직접 오간다.
+function onFileSignal({ transferId, data }) {
+  const tr = state.incoming.get(transferId);
+  if (tr) { tr.sig = tr.sig.then(() => receiverSignal(transferId, tr, data)).catch(() => {}); return; }
+  const out = state.outgoing.get(transferId);
+  if (out?.pc) out.sig = out.sig.then(() => senderSignal(out, data)).catch(() => {});
+}
+
+async function receiverSignal(transferId, tr, data) {
+  if (data.fallback) return closePeer(tr); // 보낸 쪽이 서버 경유로 바꿈
+  if (data.sdp) {
+    const pc = tr.pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+    pc.onicecandidate = (e) => { if (e.candidate) emit('file.signal', { transferId, data: { candidate: e.candidate } }); };
+    pc.ondatachannel = ({ channel }) => {
+      channel.binaryType = 'arraybuffer';
+      tr.direct = true;
+      channel.onmessage = (e) => (typeof e.data === 'string' ? finishIncoming(transferId, true) : writeChunk(transferId, tr, new Uint8Array(e.data), true));
+      channel.onclose = () => { // 다 받기 전에 직접 연결이 끊긴 경우
+        if (state.incoming.get(transferId) === tr && tr.pc === pc) tr.chain.then(() => {
+          if (state.incoming.get(transferId) !== tr) return;
+          emit('file.cancel', { transferId });
+          failIncoming(transferId, '직접 연결이 끊어졌습니다. 다시 받아 주세요.');
+        });
+      };
+    };
+    await pc.setRemoteDescription(data.sdp);
+    await pc.setLocalDescription(await pc.createAnswer());
+    emit('file.signal', { transferId, data: { sdp: pc.localDescription } });
+  } else if (data.candidate && tr.pc) {
+    await tr.pc.addIceCandidate(data.candidate);
+  }
+}
+
+async function senderSignal(out, data) {
+  if (data.sdp) await out.pc.setRemoteDescription(data.sdp);
+  else if (data.candidate) await out.pc.addIceCandidate(data.candidate);
+}
+
+function abortOutgoing(out) {
+  out.failed = true;
+  out.onAck?.();
+  out.wake?.();
+  try { out.pc?.close(); } catch { /* 이미 닫힘 */ }
+  out.pc = null;
+}
+
+async function sendFileP2P(transferId) {
+  const out = state.outgoing.get(transferId);
+  if (!out) return;
+  let pc, ch;
+  const opened = new Promise((resolve) => {
+    out.wake = () => resolve(false);
+    setTimeout(() => resolve(false), P2P_TIMEOUT);
+    try {
+      pc = out.pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+      ch = pc.createDataChannel('file');
+      ch.binaryType = 'arraybuffer';
+      ch.bufferedAmountLowThreshold = DC_HIGH / 4;
+      ch.onopen = () => resolve(true);
+      pc.onicecandidate = (e) => { if (e.candidate) emit('file.signal', { transferId, data: { candidate: e.candidate } }); };
+      pc.createOffer().then((o) => pc.setLocalDescription(o))
+        .then(() => emit('file.signal', { transferId, data: { sdp: pc.localDescription } }))
+        .catch(() => resolve(false));
+    } catch { resolve(false); }
+  });
+
+  if (!(await opened)) {
+    if (out.failed) return;
+    try { pc?.close(); } catch { /* 이미 닫힘 */ }
+    out.pc = null;
+    emit('file.signal', { transferId, data: { fallback: true } });
+    return sendFile(transferId); // 직접 연결 실패 → 서버 경유
+  }
+
+  let closed = false;
+  ch.onclose = () => { closed = true; out.wake?.(); };
+  ch.onbufferedamountlow = () => out.wake?.();
+  try {
+    for (let offset = 0; !out.failed && !closed;) {
+      const block = await window.api.readFile(out.fileId, offset, CHUNK);
+      for (let i = 0; i < block.length && !closed && !out.failed; i += DC_CHUNK) {
+        if (ch.bufferedAmount > DC_HIGH) await new Promise((resolve) => { out.wake = resolve; }); // 밀리면 기다린다
+        if (closed || out.failed) break;
+        ch.send(block.subarray(i, i + DC_CHUNK));
+      }
+      offset += block.length;
+      if (block.length < CHUNK) break;
+    }
+    if (out.failed) return;
+    if (closed) throw new Error('closed');
+    ch.send('end');
+    ch.onbufferedamountlow = null; // 여기서부터는 연결이 닫힐 때만 깨어난다
+    // 받는 쪽이 저장을 마치고 연결을 닫을 때까지 기다린다(최대 1분)
+    await new Promise((resolve) => { out.wake = resolve; if (closed) resolve(); setTimeout(resolve, 60_000); });
+  } catch {
+    emit('file.cancel', { transferId });
+  } finally {
+    try { pc.close(); } catch { /* 이미 닫힘 */ }
+    state.outgoing.delete(transferId);
+  }
 }
 
 async function failIncoming(transferId, reason) {
   const tr = state.incoming.get(transferId);
   if (!tr) return;
   state.incoming.delete(transferId);
+  closePeer(tr);
   await window.api.saveAbort(tr.handle);
   const box = state.fileBoxes.get(tr.msg.id);
   if (box) { await renderFile(tr.msg, box, false); setStatus(box, reason || '전송에 실패했습니다.', true); }
@@ -454,7 +578,7 @@ async function onFileOffer({ transferId, fileId }) {
   const local = await window.api.localFile(fileId);
   try {
     if (!local) return await request('file.reject', { transferId });
-    state.outgoing.set(transferId, { fileId, failed: false, onAck: null });
+    state.outgoing.set(transferId, { fileId, failed: false, onAck: null, wake: null, pc: null, sig: Promise.resolve() });
     await request('file.accept', { transferId });
   } catch { state.outgoing.delete(transferId); } // 다른 창이 먼저 맡은 경우
 }

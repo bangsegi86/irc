@@ -6,6 +6,9 @@ const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { randomUUID } = require('node:crypto');
 
+// P2P 직접 전송이 같은 공유기 안에서도 잘 연결되도록 내부 IP 숨김(mDNS)을 끈다
+app.commandLine.appendSwitch('disable-features', 'WebRtcHideLocalIpsWithMdns');
+
 let mainWindow = null;
 const dmWindows = new Map(); // 상대 ID -> 창
 const saves = new Map();     // 저장 중인 파일: 핸들 -> { fd, path }
