@@ -1,0 +1,377 @@
+// 사랑방 서버: WebSocket 프로토콜 처리
+import { WebSocketServer } from 'ws';
+import { openDb, hashPassword, verifyPassword, newToken, dmKey } from './db.js';
+
+const MAX_TEXT = 4000;
+const MAX_CHUNK = 512 * 1024; // 파일 조각 최대 크기
+const OFFER_TIMEOUT_MS = 10_000;
+
+class ChatError extends Error {
+  constructor(code, message) { super(message); this.code = code; }
+}
+const fail = (code, message) => { throw new ChatError(code, message); };
+
+export function startServer({ port = 7070, host = '0.0.0.0', dbPath = ':memory:', serverPassword = '', retentionDays = 0 } = {}) {
+  const db = openDb(dbPath);
+  const wss = new WebSocketServer({ port, host, maxPayload: MAX_CHUNK + 1024 });
+  const online = new Map();    // userId -> Set<conn>
+  const transfers = new Map(); // transferId -> { receiver, sender, offered, rejected, timer }
+  let nextTransferId = 1;
+
+  const q = (sql) => db.prepare(sql);
+  const now = () => Date.now();
+
+  // ---------- 조회 도우미 ----------
+  const userById = (id) => q('SELECT id, nick FROM users WHERE id = ?').get(id);
+  const userByNick = (nick) => q('SELECT id, nick, pass FROM users WHERE nick = ?').get(String(nick || ''));
+  const isMember = (roomId, userId) => !!q('SELECT 1 FROM members WHERE room_id = ? AND user_id = ?').get(roomId, userId);
+  const memberIds = (roomId) => q('SELECT user_id FROM members WHERE room_id = ?').all(roomId).map((r) => r.user_id);
+
+  function roomView(roomId) {
+    const r = q('SELECT id, name, is_public, owner_id FROM rooms WHERE id = ?').get(roomId);
+    if (!r) return null;
+    const members = q('SELECT u.id, u.nick FROM members m JOIN users u ON u.id = m.user_id WHERE m.room_id = ? ORDER BY u.nick')
+      .all(roomId).map((u) => ({ id: u.id, nick: u.nick, online: online.has(u.id) }));
+    return { id: r.id, name: r.name, isPublic: !!r.is_public, ownerId: r.owner_id, members };
+  }
+
+  function msgView(row) {
+    const sender = userById(row.sender_id);
+    const m = { id: row.id, from: { id: sender.id, nick: sender.nick }, text: row.text, ts: row.ts };
+    if (row.room_id) m.roomId = row.room_id;
+    else m.dm = row.dm_key.split(':').map(Number);
+    if (row.file) m.file = JSON.parse(row.file);
+    if (row.reply_to) {
+      const o = q('SELECT id, sender_id, text, file FROM messages WHERE id = ?').get(row.reply_to);
+      if (o) {
+        const snippet = o.text ? o.text.slice(0, 80) : (o.file ? `[파일] ${JSON.parse(o.file).name}` : '');
+        m.replyTo = { id: o.id, nick: userById(o.sender_id).nick, text: snippet };
+      }
+    }
+    return m;
+  }
+
+  function invitesFor(userId) {
+    return q(`SELECT i.id, i.room_id, r.name AS room_name, u.nick AS from_nick
+              FROM invites i JOIN rooms r ON r.id = i.room_id JOIN users u ON u.id = i.from_id
+              WHERE i.to_id = ?`).all(userId)
+      .map((i) => ({ id: i.id, roomId: i.room_id, roomName: i.room_name, from: i.from_nick }));
+  }
+
+  // ---------- 전송 도우미 ----------
+  const send = (conn, obj) => { if (conn.ws.readyState === 1) conn.ws.send(JSON.stringify(obj)); };
+  const sendUser = (userId, obj) => { for (const c of online.get(userId) || []) send(c, obj); };
+  const sendUsers = (ids, obj) => { for (const id of new Set(ids)) sendUser(id, obj); };
+  const sendAll = (obj) => { for (const set of online.values()) for (const c of set) send(c, obj); };
+  const pushRoom = (roomId) => { const room = roomView(roomId); if (room) sendUsers(room.members.map((m) => m.id), { t: 'room.update', room }); };
+
+  function attach(conn, user) {
+    conn.user = { id: user.id, nick: user.nick };
+    const wasOffline = !online.has(user.id);
+    if (wasOffline) online.set(user.id, new Set());
+    online.get(user.id).add(conn);
+    if (wasOffline) sendAll({ t: 'presence', userId: user.id, nick: user.nick, online: true });
+  }
+
+  function sessionPayload(user, token) {
+    const rooms = q('SELECT room_id FROM members WHERE user_id = ?').all(user.id).map((r) => roomView(r.room_id));
+    return { user: { id: user.id, nick: user.nick }, token, rooms, invites: invitesFor(user.id) };
+  }
+
+  function endTransfer(id, notify, reason) {
+    const tr = transfers.get(id);
+    if (!tr) return;
+    clearTimeout(tr.timer);
+    transfers.delete(id);
+    for (const c of notify) if (c) send(c, { t: 'file.fail', transferId: id, reason });
+  }
+
+  // ---------- 요청 처리 ----------
+  const handlers = {
+    register(conn, m) {
+      if (serverPassword && m.serverPassword !== serverPassword) fail('bad_server_password', '서버 접속 암호가 틀렸습니다.');
+      const nick = String(m.nick || '').trim();
+      if (!/^[^\s@]{2,20}$/u.test(nick)) fail('bad_nick', '닉네임은 공백과 @ 없이 2~20자여야 합니다.');
+      if (String(m.password || '').length < 4) fail('bad_password', '비밀번호는 4자 이상이어야 합니다.');
+      if (userByNick(nick)) fail('nick_taken', '이미 사용 중인 닉네임입니다.');
+      const info = q('INSERT INTO users (nick, pass, created) VALUES (?, ?, ?)').run(nick, hashPassword(String(m.password)), now());
+      const user = { id: Number(info.lastInsertRowid), nick };
+      const token = newToken();
+      q('INSERT INTO sessions (token, user_id, created) VALUES (?, ?, ?)').run(token, user.id, now());
+      attach(conn, user);
+      return sessionPayload(user, token);
+    },
+
+    login(conn, m) {
+      let user, token = m.token;
+      if (token) {
+        const s = q('SELECT user_id FROM sessions WHERE token = ?').get(String(token));
+        if (!s) fail('bad_token', '로그인이 만료되었습니다. 다시 로그인해 주세요.');
+        user = userById(s.user_id);
+      } else {
+        const u = userByNick(m.nick);
+        if (!u || !verifyPassword(String(m.password || ''), u.pass)) fail('bad_login', '닉네임 또는 비밀번호가 틀렸습니다.');
+        user = u;
+        token = newToken();
+        q('INSERT INTO sessions (token, user_id, created) VALUES (?, ?, ?)').run(token, user.id, now());
+      }
+      attach(conn, user);
+      return sessionPayload(user, token);
+    },
+
+    'users.list'() {
+      return { users: q('SELECT id, nick FROM users ORDER BY nick').all().map((u) => ({ ...u, online: online.has(u.id) })) };
+    },
+
+    'room.create'(conn, m) {
+      const name = String(m.name || '').trim();
+      if (name.length < 1 || name.length > 30) fail('bad_name', '방 이름은 1~30자여야 합니다.');
+      if (q('SELECT 1 FROM rooms WHERE name = ?').get(name)) fail('name_taken', '같은 이름의 방이 이미 있습니다.');
+      const info = q('INSERT INTO rooms (name, is_public, owner_id, created) VALUES (?, ?, ?, ?)').run(name, m.isPublic ? 1 : 0, conn.user.id, now());
+      const roomId = Number(info.lastInsertRowid);
+      q('INSERT INTO members (room_id, user_id, joined) VALUES (?, ?, ?)').run(roomId, conn.user.id, now());
+      pushRoom(roomId);
+      return { room: roomView(roomId) };
+    },
+
+    'room.list'(conn) {
+      const rows = q(`SELECT r.id, r.name, r.is_public,
+                        (SELECT COUNT(*) FROM members m WHERE m.room_id = r.id) AS n,
+                        EXISTS(SELECT 1 FROM members m WHERE m.room_id = r.id AND m.user_id = ?) AS joined
+                      FROM rooms r WHERE r.is_public = 1 ORDER BY r.name`).all(conn.user.id);
+      return { rooms: rows.map((r) => ({ id: r.id, name: r.name, members: r.n, joined: !!r.joined })) };
+    },
+
+    'room.join'(conn, m) {
+      const r = q('SELECT id, is_public FROM rooms WHERE id = ?').get(m.roomId);
+      if (!r) fail('no_room', '없는 방입니다.');
+      if (!r.is_public) fail('private_room', '비공개 방은 초대를 받아야 들어갈 수 있습니다.');
+      q('INSERT OR IGNORE INTO members (room_id, user_id, joined) VALUES (?, ?, ?)').run(r.id, conn.user.id, now());
+      q('DELETE FROM invites WHERE room_id = ? AND to_id = ?').run(r.id, conn.user.id);
+      pushRoom(r.id);
+      return { room: roomView(r.id) };
+    },
+
+    'room.leave'(conn, m) {
+      if (!isMember(m.roomId, conn.user.id)) fail('not_member', '이 방의 구성원이 아닙니다.');
+      q('DELETE FROM members WHERE room_id = ? AND user_id = ?').run(m.roomId, conn.user.id);
+      sendUser(conn.user.id, { t: 'room.left', roomId: m.roomId });
+      if (memberIds(m.roomId).length === 0) {
+        q('DELETE FROM messages WHERE room_id = ?').run(m.roomId);
+        q('DELETE FROM rooms WHERE id = ?').run(m.roomId); // 아무도 없으면 방 정리
+      } else pushRoom(m.roomId);
+      return {};
+    },
+
+    'room.invite'(conn, m) {
+      if (!isMember(m.roomId, conn.user.id)) fail('not_member', '이 방의 구성원만 초대할 수 있습니다.');
+      const target = userByNick(m.nick);
+      if (!target) fail('no_user', '그런 닉네임의 사용자가 없습니다.');
+      if (isMember(m.roomId, target.id)) fail('already_member', '이미 방에 있는 사용자입니다.');
+      q('INSERT OR IGNORE INTO invites (room_id, from_id, to_id, created) VALUES (?, ?, ?, ?)').run(m.roomId, conn.user.id, target.id, now());
+      const inv = invitesFor(target.id).find((i) => i.roomId === m.roomId);
+      sendUser(target.id, { t: 'invite', invite: inv });
+      return {};
+    },
+
+    'invite.accept'(conn, m) {
+      const inv = q('SELECT id, room_id FROM invites WHERE id = ? AND to_id = ?').get(m.inviteId, conn.user.id);
+      if (!inv) fail('no_invite', '초대를 찾을 수 없습니다.');
+      q('DELETE FROM invites WHERE id = ?').run(inv.id);
+      q('INSERT OR IGNORE INTO members (room_id, user_id, joined) VALUES (?, ?, ?)').run(inv.room_id, conn.user.id, now());
+      pushRoom(inv.room_id);
+      return { room: roomView(inv.room_id) };
+    },
+
+    'invite.decline'(conn, m) {
+      q('DELETE FROM invites WHERE id = ? AND to_id = ?').run(m.inviteId, conn.user.id);
+      return {};
+    },
+
+    'msg.send'(conn, m) {
+      const text = String(m.text || '');
+      if (text.length > MAX_TEXT) fail('too_long', `메시지는 ${MAX_TEXT}자까지 보낼 수 있습니다.`);
+      let file = null;
+      if (m.file) {
+        const size = Number(m.file.size);
+        if (!m.file.fileId || !m.file.name || !Number.isFinite(size) || size < 0) fail('bad_file', '파일 정보가 올바르지 않습니다.');
+        file = JSON.stringify({ fileId: String(m.file.fileId).slice(0, 64), name: String(m.file.name).slice(0, 255), size, mime: String(m.file.mime || '').slice(0, 100) });
+      }
+      if (!text.trim() && !file) fail('empty', '빈 메시지는 보낼 수 없습니다.');
+
+      let roomId = null, key = null, targets;
+      if (m.roomId != null) {
+        if (!isMember(m.roomId, conn.user.id)) fail('not_member', '이 방의 구성원이 아닙니다.');
+        roomId = m.roomId;
+        targets = memberIds(roomId);
+      } else {
+        const peer = userById(m.toUserId);
+        if (!peer) fail('no_user', '없는 사용자입니다.');
+        key = dmKey(conn.user.id, peer.id);
+        targets = [conn.user.id, peer.id];
+      }
+      let replyTo = null;
+      if (m.replyTo != null) {
+        const o = q('SELECT room_id, dm_key FROM messages WHERE id = ?').get(m.replyTo);
+        if (!o || o.room_id !== roomId || o.dm_key !== key) fail('bad_reply', '답글 대상 메시지를 찾을 수 없습니다.');
+        replyTo = m.replyTo;
+      }
+      const info = q('INSERT INTO messages (room_id, dm_key, sender_id, text, reply_to, file, ts) VALUES (?, ?, ?, ?, ?, ?, ?)')
+        .run(roomId, key, conn.user.id, text, replyTo, file, now());
+      const msg = msgView(q('SELECT * FROM messages WHERE id = ?').get(Number(info.lastInsertRowid)));
+      sendUsers(targets, { t: 'msg', msg });
+
+      // @닉네임 호출
+      if (roomId) {
+        const nicks = new Set([...text.matchAll(/@([^\s@]{2,20})/gu)].map((x) => x[1].toLowerCase()));
+        if (nicks.size) {
+          for (const mem of roomView(roomId).members) {
+            if (mem.id !== conn.user.id && nicks.has(mem.nick.toLowerCase())) sendUser(mem.id, { t: 'mention', msg });
+          }
+        }
+      }
+      return { msg };
+    },
+
+    history(conn, m) {
+      const limit = Math.min(Math.max(Number(m.limit) || 50, 1), 200);
+      const before = Number(m.before) || Number.MAX_SAFE_INTEGER;
+      let rows;
+      if (m.roomId != null) {
+        if (!isMember(m.roomId, conn.user.id)) fail('not_member', '이 방의 구성원이 아닙니다.');
+        rows = q('SELECT * FROM messages WHERE room_id = ? AND id < ? ORDER BY id DESC LIMIT ?').all(m.roomId, before, limit);
+      } else {
+        rows = q('SELECT * FROM messages WHERE dm_key = ? AND id < ? ORDER BY id DESC LIMIT ?').all(dmKey(conn.user.id, Number(m.peerId)), before, limit);
+      }
+      return { messages: rows.reverse().map(msgView) };
+    },
+
+    call(conn, m) {
+      const target = userById(m.userId);
+      if (!target) fail('no_user', '없는 사용자입니다.');
+      let roomName = null;
+      if (m.roomId != null) {
+        if (!isMember(m.roomId, conn.user.id) || !isMember(m.roomId, target.id)) fail('not_member', '같은 방에 있는 사용자만 호출할 수 있습니다.');
+        roomName = roomView(m.roomId).name;
+      }
+      if (!online.has(target.id)) fail('offline', '상대가 접속 중이 아닙니다.');
+      sendUser(target.id, { t: 'call', from: conn.user, roomId: m.roomId ?? null, roomName });
+      return {};
+    },
+
+    // ----- 파일 중계: 디스크에 쓰지 않고 보낸 사람 → 받는 사람으로 넘기기만 한다 -----
+    'file.request'(conn, m) {
+      const row = q('SELECT * FROM messages WHERE id = ?').get(m.msgId);
+      if (!row || !row.file) fail('no_file', '파일 메시지를 찾을 수 없습니다.');
+      const allowed = row.room_id ? isMember(row.room_id, conn.user.id) : row.dm_key.split(':').map(Number).includes(conn.user.id);
+      if (!allowed) fail('forbidden', '이 파일을 받을 권한이 없습니다.');
+      const senders = [...(online.get(row.sender_id) || [])].filter((c) => c !== conn);
+      if (!senders.length) fail('sender_offline', '보낸 사람이 접속 중이 아니어서 지금은 받을 수 없습니다.');
+      const id = nextTransferId++;
+      const file = JSON.parse(row.file);
+      const tr = { receiver: conn, sender: null, offered: senders.length, rejected: 0 };
+      tr.timer = setTimeout(() => { if (!tr.sender) endTransfer(id, [conn], '보낸 사람 쪽에서 응답이 없습니다.'); }, OFFER_TIMEOUT_MS);
+      transfers.set(id, tr);
+      for (const c of senders) send(c, { t: 'file.offer', transferId: id, fileId: file.fileId });
+      return { transferId: id, file };
+    },
+
+    'file.accept'(conn, m) {
+      const tr = transfers.get(m.transferId);
+      if (!tr || tr.sender) fail('no_transfer', '이미 처리된 전송입니다.');
+      tr.sender = conn;
+      clearTimeout(tr.timer);
+      send(conn, { t: 'file.go', transferId: m.transferId });
+      return {};
+    },
+
+    'file.reject'(conn, m) {
+      const tr = transfers.get(m.transferId);
+      if (tr && !tr.sender && ++tr.rejected >= tr.offered) endTransfer(m.transferId, [tr.receiver], '보낸 사람 PC에 원본 파일이 더 이상 없습니다.');
+      return {};
+    },
+
+    'file.ack'(conn, m) {
+      const tr = transfers.get(m.transferId);
+      if (tr && tr.receiver === conn && tr.sender) send(tr.sender, { t: 'file.ack', transferId: m.transferId });
+    },
+
+    'file.end'(conn, m) {
+      const tr = transfers.get(m.transferId);
+      if (tr && tr.sender === conn) {
+        send(tr.receiver, { t: 'file.end', transferId: m.transferId });
+        endTransfer(m.transferId, []);
+      }
+    },
+
+    'file.cancel'(conn, m) {
+      const tr = transfers.get(m.transferId);
+      if (tr && (tr.sender === conn || tr.receiver === conn)) {
+        endTransfer(m.transferId, [tr.sender === conn ? tr.receiver : tr.sender], '전송이 취소되었습니다.');
+      }
+    },
+  };
+
+  const NO_REPLY = new Set(['file.ack', 'file.end', 'file.cancel']);
+
+  wss.on('connection', (ws) => {
+    const conn = { ws, user: null };
+
+    ws.on('message', (data, isBinary) => {
+      if (isBinary) { // 파일 조각: [전송번호 4바이트][내용]
+        if (data.length < 4) return;
+        const tr = transfers.get(data.readUInt32BE(0));
+        if (tr && tr.sender === conn && tr.receiver.ws.readyState === 1) tr.receiver.ws.send(data, { binary: true });
+        return;
+      }
+      let m;
+      try { m = JSON.parse(data.toString()); } catch { return; }
+      const handler = handlers[m.t];
+      try {
+        if (!handler) fail('unknown', '알 수 없는 요청입니다.');
+        if (!conn.user && m.t !== 'register' && m.t !== 'login') fail('auth', '먼저 로그인해 주세요.');
+        const result = handler(conn, m);
+        if (!NO_REPLY.has(m.t)) send(conn, { t: 'ok', id: m.id, ...result });
+      } catch (e) {
+        if (!(e instanceof ChatError)) console.error('[서버 오류]', e);
+        send(conn, { t: 'err', id: m.id, code: e.code || 'internal', message: e instanceof ChatError ? e.message : '서버 내부 오류가 발생했습니다.' });
+      }
+    });
+
+    ws.on('close', () => {
+      for (const [id, tr] of transfers) {
+        if (tr.sender === conn) endTransfer(id, [tr.receiver], '보낸 사람의 연결이 끊어졌습니다.');
+        else if (tr.receiver === conn) endTransfer(id, [tr.sender], '받는 사람의 연결이 끊어졌습니다.');
+      }
+      if (!conn.user) return;
+      const set = online.get(conn.user.id);
+      set?.delete(conn);
+      if (set && set.size === 0) {
+        online.delete(conn.user.id);
+        sendAll({ t: 'presence', userId: conn.user.id, nick: conn.user.nick, online: false });
+      }
+    });
+    ws.on('error', () => {});
+  });
+
+  // 오래된 메시지 정리(선택)
+  let sweeper = null;
+  if (retentionDays > 0) {
+    const sweep = () => q('DELETE FROM messages WHERE ts < ?').run(now() - retentionDays * 86_400_000);
+    sweep();
+    sweeper = setInterval(sweep, 3_600_000);
+    sweeper.unref();
+  }
+
+  const ready = new Promise((resolve, reject) => { wss.once('listening', resolve); wss.once('error', reject); });
+  return {
+    ready,
+    get port() { return wss.address().port; },
+    close() {
+      clearInterval(sweeper);
+      for (const tr of transfers.values()) clearTimeout(tr.timer);
+      for (const c of wss.clients) c.terminate();
+      return new Promise((resolve) => wss.close(() => { db.close(); resolve(); }));
+    },
+  };
+}
