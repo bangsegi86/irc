@@ -18,4 +18,5 @@ contextBridge.exposeInMainWorld('api', {
   saveAbort: call('file:saveAbort'),
   openFile: call('file:open'),
   showFile: call('file:show'),
+  copyText: call('clipboard:write'),
 });

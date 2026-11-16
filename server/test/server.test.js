@@ -208,3 +208,33 @@ test('알림 내역: 꺼져 있던 동안의 호출도 다음 접속 때 보이�
   assert.equal((await b4.req('login', { token })).notices.length, 0);
   await Promise.all([a.close(), b2.close(), b3.close(), b4.close()]);
 });
+
+test('서식 메시지: 허용된 서식만 남고, 일반 글자도 함께 저장된다', async () => {
+  const a = await user('꾸미는이'), b = await user('읽는이');
+  const { msg } = await a.req('msg.send', { toUserId: b.me.id, rich: [
+    { s: '중요: ', b: 1, bg: 'yellow', onclick: 'alert(1)', style: 'x' },
+    { s: '<script>alert(1)</script>', u: 1, sz: 'xl', bg: 'url(evil)' },
+    { s: ' 끝', sz: 'huge' },
+    { t: 'code', lang: 'sql', text: 'SELECT 1;' },
+    { t: 'code', lang: 'evil', text: 'x = 1' },
+    { t: 'iframe', src: 'http://evil' }, null, 'text',
+  ] });
+  assert.deepEqual(msg.rich, [
+    { s: '중요: ', b: 1, bg: 'yellow' },
+    { s: '<script>alert(1)</script>', u: 1, sz: 'xl' },
+    { s: ' 끝' },
+    { t: 'code', lang: 'sql', text: 'SELECT 1;' },
+    { t: 'code', lang: 'text', text: 'x = 1' },
+  ]);
+  assert.equal(msg.text, '중요: <script>alert(1)</script> 끝\nSELECT 1;\n\nx = 1');
+  assert.deepEqual((await b.next('msg')).msg.rich, msg.rich);
+  assert.deepEqual((await b.req('history', { peerId: a.me.id })).messages[0].rich, msg.rich);
+
+  // 서식이 하나도 없으면 일반 메시지로 저장
+  const plain = (await a.req('msg.send', { toUserId: b.me.id, rich: [{ s: '그냥 글자' }] })).msg;
+  assert.equal(plain.text, '그냥 글자');
+  assert.equal(plain.rich, undefined);
+  await assert.rejects(a.req('msg.send', { toUserId: b.me.id, rich: 'not-array' }), { code: 'bad_rich' });
+  await assert.rejects(a.req('msg.send', { toUserId: b.me.id, rich: [{ s: '   ' }] }), { code: 'empty' });
+  await Promise.all([a.close(), b.close()]);
+});
