@@ -238,6 +238,17 @@ function onJson(m) {
       if (!DM_MODE) { renderSidebar(); renderMembers(); }
       return;
     }
+    case 'user.update': { // 누군가 닉네임을 바꿈
+      const u = m.user;
+      const known = state.users.get(u.id);
+      if (known) known.nick = u.nick; else state.users.set(u.id, { ...u, online: true });
+      for (const r of state.rooms.values()) for (const mem of r.members) if (mem.id === u.id) mem.nick = u.nick;
+      if (u.id === state.me.id) { state.me.nick = u.nick; localStorage.setItem('sb.nick', u.nick); $('meNick').textContent = u.nick; }
+      for (const node of document.querySelectorAll(`.msg[data-uid="${u.id}"]`)) { node.querySelector('.nick').textContent = u.nick; node.querySelector('.av').replaceWith(avatar(u)); }
+      if (state.current?.type === 'dm' && state.current.id === u.id) { state.current.nick = u.nick; $('chatTitle').textContent = `${u.nick} 님과 1:1 대화`; if (DM_MODE) document.title = `${u.nick} — 1:1 대화`; }
+      if (!DM_MODE) { renderSidebar(); renderMembers(); }
+      return;
+    }
     case 'file.offer': return onFileOffer(m);
     case 'file.go': return m.p2p && window.RTCPeerConnection ? sendFileP2P(m.transferId) : sendFile(m.transferId);
     case 'file.signal': return onFileSignal(m);
@@ -458,9 +469,25 @@ function flashMessage(id) {
   setTimeout(() => node.classList.remove('flash'), 1500);
 }
 
+// 글자를 화면 조각으로: 웹 주소는 누를 수 있는 링크로, @닉네임은 강조로. 사용자 입력은 항상 글자로만 넣는다(HTML로 해석하지 않음).
+const URL_RE = /((?:https?:\/\/|www\.)[^\s<>"']+)/giu;
 function textNodes(text) {
-  // @닉네임을 강조한다. 사용자 입력은 항상 글자로만 넣는다(HTML로 해석하지 않음).
-  return text.split(/(@[^\s@]{2,20})/gu).map((part) => (part.startsWith('@') && part.length > 2 ? el('span', { className: 'mention' }, part) : part));
+  const out = [];
+  for (const part of text.split(URL_RE)) {
+    if (!part) continue;
+    if (/^(?:https?:\/\/|www\.)/i.test(part)) {
+      const tail = /[.,!?;:)\]}'"]+$/.exec(part)?.[0] || ''; // 문장 끝의 마침표·괄호는 주소에서 뺀다
+      const shown = tail ? part.slice(0, -tail.length) : part;
+      const href = /^www\./i.test(shown) ? `https://${shown}` : shown;
+      if (shown.length > 4 && /\.[a-z0-9-]{2,}|localhost|\d+\.\d+/i.test(shown)) {
+        out.push(el('a', { href, title: `${href} — 기본 브라우저로 엽니다`, onclick: (e) => { e.preventDefault(); window.api.openUrl(href); } }, shown));
+        if (tail) out.push(tail);
+        continue;
+      }
+    }
+    out.push(...part.split(/(@[^\s@]{2,20})/gu).map((p) => (p.startsWith('@') && p.length > 2 ? el('span', { className: 'mention' }, p) : p)));
+  }
+  return out;
 }
 
 function buildMessage(msg) {
@@ -469,6 +496,7 @@ function buildMessage(msg) {
   const node = el('div', { className: `msg ${mine ? 'mine' : ''} ${called ? 'called' : ''}` });
   node.dataset.msg = msg.id;
   node.dataset.ts = msg.ts;
+  node.dataset.uid = msg.from.id;
   const body = el('div', { className: 'body' });
   body.append(el('div', { className: 'head' }, el('span', { className: 'nick' }, msg.from.nick), el('span', { className: 'time', title: fmtTime(msg.ts) }, fmtClock(msg.ts))));
   if (msg.replyTo) {
@@ -905,6 +933,12 @@ function wire() {
   $('btnReplyCancel').onclick = () => setReply(null);
   $('btnNoticeClear').onclick = clearNotices;
   $('btnServer').onclick = $('btnBannerServer').onclick = askServer;
+  $('btnRename').onclick = () => ask({
+    title: '닉네임 변경', okLabel: '변경',
+    body: el('p', { className: 'note' }, '지난 메시지와 구성원 목록에도 새 이름으로 보입니다. 로그인할 때도 새 닉네임을 씁니다. (공백과 @ 없이 2~20자)'),
+    fields: [{ key: 'nick', label: '새 닉네임', value: state.me.nick }],
+    onSubmit: (v) => request('user.rename', { nick: v.nick }),
+  });
   // 저장된 로그인이 있으면 비밀번호 없이 (바뀐) 주소로 다시 연결
   $('btnResume').onclick = async () => {
     $('loginError').textContent = '';
@@ -939,7 +973,12 @@ function wire() {
   $('modalCancel').onclick = closeModal;
   $('btnAttach').onclick = async () => sendFiles(await window.api.pickFiles());
   $('composer').onsubmit = (e) => { e.preventDefault(); sendText(); };
-  Editor.init({ onSend: sendText });
+  Editor.init({
+    onSend: sendText,
+    // '@' 를 쳤을 때 보여 줄 사람: 지금 방의 구성원(나 제외). 1:1 대화에서는 띄우지 않는다
+    getMembers: () => (state.current?.type === 'room' ? (state.rooms.get(state.current.id)?.members || []).filter((m) => m.id !== state.me.id) : []),
+    memberRow: (m) => [avatar(m, 24), el('span', { className: 'name' }, m.nick), el('span', { className: `dot ${m.online ? 'on' : ''}`, title: m.online ? '접속 중' : '자리 비움' })],
+  });
 
   // 파일을 끌어다 놓아 보내기
   const main = document.querySelector('main');

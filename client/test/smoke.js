@@ -1,6 +1,6 @@
 // 클라이언트 자동 점검: 실제 서버에 붙어서 화면을 조작해 본다.
 // 실행: (서버를 PORT=7171 로 켠 뒤)  npx electron test/smoke.js
-const { app, dialog, BrowserWindow, nativeImage } = require('electron');
+const { app, dialog, BrowserWindow, nativeImage, shell } = require('electron');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -44,11 +44,14 @@ function peer() {
 
 async function run() {
   const suffix = Date.now() % 100000;
-  const myNick = `나${suffix}`, peerNick = `상대${suffix}`, roomName = `점검방${suffix}`;
+  let myNick = `나${suffix}`;
+  const peerNick = `상대${suffix}`, roomName = `점검방${suffix}`;
   const bigFile = path.join(tmp, '보고서.bin');
   const bigContent = require('node:crypto').randomBytes(700_000);
   fs.writeFileSync(bigFile, bigContent);
   dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [bigFile] });
+  const openedUrls = [];
+  shell.openExternal = async (u) => { openedUrls.push(u); }; // 점검 중에는 실제 브라우저를 열지 않는다
 
   require('../main.js');
   await app.whenReady();
@@ -112,8 +115,9 @@ async function run() {
   assert.deepEqual(fancy.rich.find((r) => r.s.includes('색칠')), { s: '색칠', bg: 'yellow', sz: 'l', x: 1, u: 1 });
   await until(() => js(win, `!!document.querySelector('.msg .f-b') && !!document.querySelector('.msg .bg-yellow.sz-l.f-x.f-u') && input.textContent === ''`), '보낸 서식 메시지 표시, 입력란 비워짐');
 
-  // 4-3. 한 메시지에 서식 글자 + 코드 블록: 굵은 글자 → 여러 줄 쿼리 붙여넣기(코드 블록 자동 삽입, SQL 인식) → 블록 밖에서 글 이어 쓰기
+  // 4-3. 한 메시지에 서식 글자 + 코드 블록: 코드 블록은 항상 맨 위, 글은 그 아래
   step('4-3');
+  assert.equal(await js(win, `document.getElementById('toolbar').firstElementChild === btnAttach`), true, '파일 첨부 버튼은 서식 줄 맨 왼쪽(굵게 앞)에 있어야 함');
   await js(win, `(() => {
     input.focus();
     document.querySelector('[data-cmd="bold"]').click();
@@ -123,35 +127,49 @@ async function run() {
     dt.setData('text/plain', 'SELECT name, age\\nFROM users\\nWHERE age > 20 -- 성인만');
     input.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
   })()`);
-  await until(() => js(win, `(() => { const p = input.querySelector('pre'); return !!p && p.dataset.lang === 'sql' && !codeLang.hidden && codeLang.value === 'sql' && btnCode.textContent === '코드 밖으로' && /코드 블록 안/.test(composeHint.textContent); })()`), '코드 블록 삽입 + 언어 인식 + 도구 줄 전환');
-  await js(win, `(() => { btnCode.click(); document.execCommand('insertText', false, '결과 알려 주세요'); })()`);
+  await until(() => js(win, `(() => { const p = input.querySelector('pre'); return !!p && input.firstChild === p && p.dataset.lang === 'sql' && !codeLang.hidden && codeLang.value === 'sql' && btnCode.textContent === '코드 밖으로' && /코드 블록 안/.test(composeHint.textContent); })()`), '코드 블록이 맨 위에 삽입 + 언어 인식 + 도구 줄 전환');
+  await js(win, `(() => { btnCode.click(); document.execCommand('insertText', false, ' 결과 알려 주세요'); })()`);
   await until(() => js(win, `codeLang.hidden && btnCode.textContent.includes('코드') && composeHint.textContent === ''`), '블록 밖으로 나오면 서식 도구 줄로 복귀');
   await js(win, `composer.requestSubmit()`);
   const code = (await b.next('msg', (e) => e.msg.rich?.some((n) => n.t === 'code'))).msg;
   assert.deepEqual(code.rich, [
-    { s: '확인 부탁', b: 1 },
     { t: 'code', lang: 'sql', text: 'SELECT name, age\nFROM users\nWHERE age > 20 -- 성인만' },
-    { s: '결과 알려 주세요' },
+    { s: '확인 부탁 결과 알려 주세요', b: 1 }, // 블록 밖으로 나오면 글의 맨 끝에서 이어 쓴다(직전 글의 서식을 잇는다)
   ]);
-  assert.equal(code.text, '확인 부탁\nSELECT name, age\nFROM users\nWHERE age > 20 -- 성인만\n결과 알려 주세요');
-  await until(() => js(win, `(() => { const m = [...document.querySelectorAll('.msg')].pop(); const c = m.querySelector('.code'); return !!c && !!m.querySelector('.f-b') && m.querySelector('.text').textContent.includes('결과 알려 주세요') && c.querySelector('.codeHead span').textContent === 'SQL' && c.querySelectorAll('.tok-kw').length >= 3 && !!c.querySelector('.tok-com') && !input.querySelector('pre'); })()`), '서식 글자와 코드 블록이 한 메시지에 표시');
+  assert.equal(code.text, 'SELECT name, age\nFROM users\nWHERE age > 20 -- 성인만\n확인 부탁 결과 알려 주세요');
+  await until(() => js(win, `(() => { const m = [...document.querySelectorAll('.msg')].pop(); const c = m.querySelector('.code'); return !!c && !!m.querySelector('.f-b') && m.querySelector('.text').firstElementChild === c && m.querySelector('.text').textContent.includes('결과 알려 주세요') && c.querySelector('.codeHead span').textContent === 'SQL' && c.querySelectorAll('.tok-kw').length >= 3 && !!c.querySelector('.tok-com') && !input.querySelector('pre'); })()`), '코드 블록(위)과 서식 글자(아래)가 한 메시지에 표시');
 
-  // 4-3b. 코드 블록 안에서 Enter는 줄바꿈(전송 안 됨), Tab은 들여쓰기, 언어 직접 선택, 글 중간에 블록 넣기
+  // 4-3b. 코드 블록은 하나만: 글 중간에서 눌러도 맨 위에 생기고, 다시 눌러도 늘지 않는다. 블록 안 Enter는 줄바꿈
   step('4-3b');
   const sentBefore = await js(win, `document.querySelectorAll('#messages .msg').length`);
   const typed = await js(win, `(() => {
     const key = (k, more = {}) => input.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true, ...more }));
     input.focus();
     document.execCommand('insertText', false, '앞글 뒷글');
-    const t = input.firstChild; getSelection().collapse(t, 3);           // '앞글 ' 뒤에 커서
-    document.querySelector('#btnCode').click();                            // 글 중간에 블록
+    const t = input.firstChild; getSelection().collapse(t, 3);           // 글 중간에 커서
+    btnCode.click();                                                       // → 블록은 맨 위에
     document.execCommand('insertText', false, 'def f(x):');
     key('Enter'); key('Tab');
     document.execCommand('insertText', false, 'return x');
     codeLang.value = 'python'; codeLang.dispatchEvent(new Event('change'));
-    return Editor.getContent();
+    const first = Editor.getContent();
+    btnCode.click();                                                       // 밖으로
+    btnCode.click();                                                       // 다시 누르면 같은 블록으로 들어간다
+    const inSame = !!input.querySelector('pre').contains(getSelection().anchorNode);
+    Editor.insertCode('두 번째 블록 시도');
+    btnCode.click();                                                       // 밖으로 나와서 여러 줄 코드를 붙여도 블록은 늘지 않는다
+    const dt = new DataTransfer(); dt.setData('text/plain', 'SELECT 1\\nFROM dual');
+    input.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+    // 블록 앞에 글을 쳐도 블록이 맨 위를 지킨다
+    getSelection().collapse(input, 0);
+    document.execCommand('insertText', false, '맨앞');
+    return { first, inSame, pres: input.querySelectorAll('pre').length, top: input.firstChild.nodeName, text: Editor.getContent().rich.filter((n) => !n.t).map((n) => n.s).join(''), code: Editor.getContent().rich.find((n) => n.t).text, order: Editor.getContent().rich.map((n) => n.t || 'text').join(',') };
   })()`);
-  assert.deepEqual(typed, { rich: [{ s: '앞글 ' }, { t: 'code', lang: 'python', text: 'def f(x):\n  return x' }, { s: '뒷글' }] });
+  assert.deepEqual(typed.first, { rich: [{ t: 'code', lang: 'python', text: 'def f(x):\n  return x' }, { s: '앞글 뒷글' }] });
+  assert.deepEqual([typed.inSame, typed.pres, typed.top], [true, 1, 'PRE'], '코드 블록은 하나만, 맨 위에 있어야 함');
+  assert.equal(typed.order, 'code,text', '보낼 내용도 코드 → 글 순서여야 함');
+  assert.ok(typed.text.includes('앞글 뒷글') && typed.text.includes('SELECT 1'), `블록 밖의 글은 블록 아래에 남아야 함: ${typed.text}`);
+  assert.ok((typed.code + typed.text).includes('맨앞') && typed.code.startsWith('def f(x):') === !typed.code.startsWith('맨앞'), `맨 앞에서 친 글은 블록 위에 따로 놓이지 않아야 함: ${JSON.stringify(typed)}`);
   assert.equal(await js(win, `document.querySelectorAll('#messages .msg').length`), sentBefore, '코드 블록 안의 Enter는 전송하지 않아야 함');
   await shot(win, 'rich-edit.png');
   // 빈 블록에서 Backspace → 블록 삭제, 서식 없는 글만 남으면 일반 메시지
@@ -199,6 +217,45 @@ async function run() {
   await until(() => js(win, `modal.hidden && localStorage.getItem('sb.url') === ${JSON.stringify(altUrl)} && banner.hidden && state.ws.url.startsWith(${JSON.stringify(altUrl)})`), '새 주소로 옮겨 붙음');
   await until(() => js(win, `chatTitle.textContent === ${JSON.stringify(roomName)} && document.querySelectorAll('#messages .msg').length >= 5`), '옮긴 뒤에도 같은 방과 대화가 보임');
   assert.equal(await js(win, `state.me.nick`), myNick, '로그인이 유지되어야 함');
+
+  // 4-7. 웹 주소는 누를 수 있는 링크로 보이고, 누르면 기본 브라우저로 연다
+  step('4-7');
+  await b.req('msg.send', { roomId: room.id, text: '자료는 https://example.com/docs?page=2 와 www.test.co.kr. 에 있어요 (javascript:alert(1) 은 링크 아님)' });
+  await until(() => js(win, `[...document.querySelectorAll('.msg')].pop().querySelectorAll('.text a').length === 2`), '링크 2개 표시');
+  assert.deepEqual(await js(win, `[...[...document.querySelectorAll('.msg')].pop().querySelectorAll('.text a')].map((a) => [a.textContent, a.getAttribute('href')])`),
+    [['https://example.com/docs?page=2', 'https://example.com/docs?page=2'], ['www.test.co.kr', 'https://www.test.co.kr']]);
+  await js(win, `[...document.querySelectorAll('.msg')].pop().querySelector('.text a').click()`);
+  await until(() => openedUrls.length === 1, '링크를 누르면 브라우저로 열기 요청');
+  assert.deepEqual(openedUrls, ['https://example.com/docs?page=2']);
+  assert.ok((await js(win, `location.href`)).includes('index.html'), '프로그램 창 자체는 다른 곳으로 이동하지 않아야 함');
+
+  // 4-8. @ 를 치면 방 구성원이 뜨고, 방향키로 고른 뒤 Enter 하면 닉네임이 들어간다(전송은 안 됨)
+  step('4-8');
+  const beforeMention = await js(win, `document.querySelectorAll('#messages .msg').length`);
+  await js(win, `(() => { input.focus(); document.execCommand('insertText', false, '잠깐 @'); })()`);
+  await until(() => js(win, `!mentionBox.hidden && document.querySelectorAll('#mentionBox .mItem').length === 1 && document.querySelector('#mentionBox .mItem.on .name').textContent === ${JSON.stringify(peerNick)}`), '호출 목록 표시(나는 빠짐)');
+  await shot(win, 'mention.png');
+  await js(win, `(() => { const key = (k) => input.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true })); key('ArrowDown'); key('ArrowUp'); key('Enter'); })()`);
+  await until(() => js(win, `mentionBox.hidden && input.textContent === ${JSON.stringify(`잠깐 @${peerNick} `)}`), '고른 닉네임이 입력됨');
+  assert.equal(await js(win, `document.querySelectorAll('#messages .msg').length`), beforeMention, '목록에서 Enter는 전송이 아니라 선택이어야 함');
+  await js(win, `(() => { document.execCommand('insertText', false, '@없는'); })()`);
+  await until(() => js(win, `mentionBox.hidden`), '맞는 사람이 없으면 목록이 닫힘');
+  await js(win, `(() => { for (let i = 0; i < 3; i++) document.execCommand('delete'); document.execCommand('insertText', false, '봐 주세요'); composer.requestSubmit(); })()`);
+  assert.equal((await b.next('msg', (e) => e.msg.text.endsWith('봐 주세요'))).msg.text, `잠깐 @${peerNick} 봐 주세요`);
+  assert.equal((await b.next('notice')).notice.kind, 'mention', '자동 완성으로 넣은 호출도 상대에게 알림이 가야 함');
+
+  // 4-9. 닉네임 변경: 내 화면·상대 화면·지난 메시지에 새 이름으로 보인다
+  step('4-9');
+  const newNick = `새${suffix}`;
+  await js(win, `btnRename.click()`);
+  assert.equal(await js(win, `!modal.hidden && document.querySelector('#modalBody input').value`), myNick);
+  await js(win, `document.querySelector('#modalBody input').value = ${JSON.stringify(peerNick)}; modalOk.click()`);
+  await until(() => js(win, `/이미 사용 중/.test(modalError.textContent)`), '겹치는 닉네임 안내');
+  await js(win, `document.querySelector('#modalBody input').value = ${JSON.stringify(newNick)}; modalOk.click()`);
+  await until(() => js(win, `modal.hidden && meNick.textContent === ${JSON.stringify(newNick)} && localStorage.getItem('sb.nick') === ${JSON.stringify(newNick)}`), '내 닉네임 표시 변경');
+  assert.equal((await b.next('user.update')).user.nick, newNick);
+  await until(() => js(win, `[...document.querySelectorAll('#memberList li.member .name')].some((n) => n.textContent.startsWith(${JSON.stringify(newNick)})) && ![...document.querySelectorAll('.msg .nick')].some((n) => n.textContent === ${JSON.stringify(myNick)})`), '구성원 목록과 지난 메시지의 이름 변경');
+  myNick = newNick;
 
   // 5. 파일 보내기(클라이언트 → 상대)
   step('5');
@@ -278,7 +335,7 @@ async function run() {
   await until(() => js(dm, `document.querySelectorAll('.msg').length === 1`), '1:1 메시지 표시');
   await js(dm, `input.textContent='좋아요'; composer.requestSubmit()`);
   assert.equal((await b.next('msg', (e) => e.msg.dm && e.msg.text === '좋아요')).msg.from.nick, myNick);
-  assert.equal(await js(win, `document.querySelectorAll('#messages .msg').length`), 8, '1:1 메시지는 방에 나타나지 않아야 함');
+  assert.equal(await js(win, `document.querySelectorAll('#messages .msg').length`), 10, '1:1 메시지는 방에 나타나지 않아야 함');
   await shot(dm, 'dm.png');
 
   // 8. 창 닫기 → 트레이, 호출 → 우측 하단 팝업 → 팝업을 누르면 해당 방으로 이동

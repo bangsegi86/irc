@@ -164,6 +164,20 @@ export function startServer({ port = 7070, host = '0.0.0.0', dbPath = ':memory:'
       return sessionPayload(user, token);
     },
 
+    // 닉네임 변경: 지난 메시지·방 구성원 목록·알림에도 새 이름으로 보인다(이름은 사용자 번호에 묶여 있다)
+    'user.rename'(conn, m) {
+      const nick = String(m.nick || '').trim();
+      if (!/^[^\s@]{2,20}$/u.test(nick)) fail('bad_nick', '닉네임은 공백과 @ 없이 2~20자여야 합니다.');
+      const before = conn.user.nick;
+      if (nick === before) fail('same_nick', '지금 쓰는 닉네임과 같습니다.');
+      const taken = userByNick(nick);
+      if (taken && taken.id !== conn.user.id) fail('nick_taken', '이미 사용 중인 닉네임입니다.');
+      q('UPDATE users SET nick = ? WHERE id = ?').run(nick, conn.user.id);
+      for (const c of online.get(conn.user.id) || []) c.user.nick = nick;
+      sendAll({ t: 'user.update', user: { id: conn.user.id, nick } });
+      return { user: { id: conn.user.id, nick }, before };
+    },
+
     'users.list'() {
       return { users: q('SELECT id, nick FROM users ORDER BY nick').all().map((u) => ({ ...u, online: online.has(u.id) })) };
     },
@@ -385,6 +399,7 @@ export function startServer({ port = 7070, host = '0.0.0.0', dbPath = ':memory:'
   const LOGGED = {
     register: (c) => ['가입', who(c)],
     login: (c, m) => ['로그인 성공', { ...who(c), 방식: m.token ? '자동 로그인' : '비밀번호' }],
+    'user.rename': (c, m, r) => ['닉네임 변경', { ...who(c), 이전: r.before }],
     'room.create': (c, m, r) => ['방 생성', { ...who(c), 방: roomLabel(r.room.id), 공개: r.room.isPublic ? '예' : '아니오' }],
     'room.join': (c, m) => ['방 입장', { ...who(c), 방: roomLabel(m.roomId) }],
     'room.leave': (c, m) => ['방 나감', { ...who(c), 방: `#${m.roomId}` }],

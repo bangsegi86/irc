@@ -280,3 +280,31 @@ test('기록(로그): 접속·로그인·메시지 등을 남기되 메시지 �
   await srv2.close();
   assert.equal(existsSync(dir2), false);
 });
+
+test('닉네임 변경: 모두에게 알리고, 지난 메시지·구성원 목록·로그인에 새 이름이 쓰인다', async () => {
+  const a = await user('옛이름'), b = await user('구경꾼');
+  const { room } = await a.req('room.create', { name: '개명방', isPublic: true });
+  await b.req('room.join', { roomId: room.id });
+  await a.req('msg.send', { roomId: room.id, text: '이름 바꾸기 전 메시지' });
+
+  await assert.rejects(a.req('user.rename', { nick: '구경꾼' }), { code: 'nick_taken' });
+  await assert.rejects(a.req('user.rename', { nick: '옛이름' }), { code: 'same_nick' });
+  await assert.rejects(a.req('user.rename', { nick: '공백 있음' }), { code: 'bad_nick' });
+  const r = await a.req('user.rename', { nick: '새이름' });
+  assert.deepEqual(r.user, { id: a.me.id, nick: '새이름' });
+  assert.deepEqual((await b.next('user.update')).user, { id: a.me.id, nick: '새이름' });
+
+  assert.equal((await b.req('history', { roomId: room.id })).messages[0].from.nick, '새이름');
+  assert.ok((await b.req('users.list')).users.some((u) => u.nick === '새이름') );
+  assert.equal((await a.req('msg.send', { roomId: room.id, text: '바꾼 뒤' })).msg.from.nick, '새이름');
+  await b.req('msg.send', { roomId: room.id, text: '@새이름 불러 봅니다' });
+  assert.equal((await a.next('notice')).notice.kind, 'mention');
+
+  const c = await client();
+  await assert.rejects(c.req('login', { nick: '옛이름', password: 'pass1234' }), { code: 'bad_login' });
+  assert.equal((await c.req('login', { nick: '새이름', password: 'pass1234' })).user.id, a.me.id);
+  await a.req('user.rename', { nick: '새이름2' }); // 옛 이름은 다른 사람이 쓸 수 있게 된다
+  const d = await client();
+  assert.equal((await d.req('register', { nick: '옛이름', password: 'pass1234' })).user.nick, '옛이름');
+  await Promise.all([a.close(), b.close(), c.close(), d.close()]);
+});
