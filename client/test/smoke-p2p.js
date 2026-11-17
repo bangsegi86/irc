@@ -42,10 +42,17 @@ async function run() {
   } else {
     const roomId = await until(() => js(`request('room.list').then((r) => r.rooms.find((x) => x.name === ${JSON.stringify(roomName)})?.id)`), '방 찾기');
     await js(`request('room.join', { roomId: ${roomId} }).then((r) => { state.rooms.set(r.room.id, r.room); return openView({ type: 'room', id: r.room.id }); })`);
+    // 받는 동안 진행 막대가 보이는지 기록해 둔다
+    await js(`(() => { window.__bar = { seen: false, max: 0, text: '' }; new MutationObserver(() => { const b = document.querySelector('.file .bar i'); if (b) { window.__bar.seen = true; window.__bar.max = Math.max(window.__bar.max, parseFloat(b.style.width) || 0); window.__bar.text = document.querySelector('.file .status')?.textContent || window.__bar.text; } }).observe(document.getElementById('messages'), { subtree: true, childList: true, attributes: true, characterData: true }); })()`);
     await until(() => js(`(() => { const b = document.querySelector('.file .row button'); if (b) b.click(); return !!b; })()`), '파일 메시지 도착');
     const saved = path.join(tmp, 'downloads', 'Sarangbang', path.basename(file));
     await until(() => js(`state.stats.p2p + state.stats.relay === 1`), '파일 수신 완료', 25000);
     const stats = await js(`state.stats`);
+    const bar = await js(`window.__bar`);
+    assert.ok(bar.seen && bar.max > 0, `받는 동안 진행 막대가 보여야 함 (${JSON.stringify(bar)})`);
+    assert.match(bar.text, /\d+% · .+ \/ .+ · .+\/초.* · 직접 전송/, '진행 글자에 퍼센트·크기·속도·방식이 있어야 함');
+    assert.equal(await js(`document.querySelectorAll('.file .bar').length`), 0, '다 받으면 진행 막대는 사라져야 함');
+    console.log(`[진행 표시 예] ${bar.text}`);
     assert.ok(fs.readFileSync(saved).equals(fs.readFileSync(file)), '받은 파일이 원본과 같아야 함');
     assert.deepEqual(stats, { p2p: 1, relay: 0 }, '서버 경유가 아니라 직접 전송이어야 함');
     await js(`input.textContent='받았음'; composer.requestSubmit()`);

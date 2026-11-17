@@ -594,6 +594,19 @@ function keepBottom() {
   if (box.scrollHeight - box.scrollTop - box.clientHeight < 400) scrollToBottom();
 }
 
+// 받는 중 진행 막대(파일 카드 아래쪽). 방을 옮겼다 돌아와 카드가 새로 그려진 경우에도 다시 붙인다
+function showProgress(box, pct) {
+  let bar = box.querySelector('.bar');
+  if (!bar) {
+    box.querySelector('.row')?.remove();
+    if (!box.querySelector('.status')) box.append(el('div', { className: 'status' }));
+    bar = el('div', { className: 'bar', role: 'progressbar', ariaLabel: '받는 중', ariaValueMin: '0', ariaValueMax: '100' }, el('i'));
+    box.append(bar);
+  }
+  bar.ariaValueNow = String(pct);
+  bar.firstChild.style.width = `${pct}%`;
+}
+
 function setStatus(box, text, bad) {
   const s = box.querySelector('.status');
   if (s) { s.textContent = text; s.classList.toggle('bad', !!bad); }
@@ -602,7 +615,7 @@ function setStatus(box, text, bad) {
 // ---------------- 파일: 받기 ----------------
 async function download(msg, box, quiet) {
   if ([...state.incoming.values()].some((t) => t.msg.id === msg.id)) return;
-  box.querySelector('.row')?.remove();
+  showProgress(box, 0);
   setStatus(box, '보낸 사람 PC에 요청하는 중…');
   const handle = await window.api.saveStart(msg.file.name);
   try {
@@ -628,8 +641,15 @@ function writeChunk(transferId, tr, chunk, direct) {
     await window.api.saveChunk(tr.handle, chunk);
     tr.received += chunk.length;
     const box = state.fileBoxes.get(tr.msg.id);
-    const pct = Math.floor((tr.received / Math.max(tr.msg.file.size, 1)) * 100);
-    if (box) setStatus(box, `받는 중… ${fmtSize(tr.received)} / ${fmtSize(tr.msg.file.size)} (${pct}%) · ${direct ? '직접 전송' : '서버 경유'}`);
+    const total = Math.max(tr.msg.file.size, 1);
+    const pct = Math.min(100, Math.floor((tr.received / total) * 100));
+    tr.startedAt ??= Date.now() - 1;
+    const speed = tr.received / ((Date.now() - tr.startedAt) / 1000); // 초당 바이트
+    const left = speed > 0 ? Math.ceil((total - tr.received) / speed) : 0;
+    if (box) {
+      showProgress(box, pct);
+      setStatus(box, `${pct}% · ${fmtSize(tr.received)} / ${fmtSize(tr.msg.file.size)} · ${fmtSize(Math.round(speed))}/초${left > 1 ? ` · 약 ${left >= 60 ? `${Math.ceil(left / 60)}분` : `${left}초`} 남음` : ''} · ${direct ? '직접 전송' : '서버 경유'}`);
+    }
     if (!direct) emit('file.ack', { transferId }); // 받았다고 알려야 다음 조각이 온다
   }).catch(() => { emit('file.cancel', { transferId }); failIncoming(transferId, '파일을 저장하지 못했습니다.'); });
 }
