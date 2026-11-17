@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld('api', {
   openDm: call('dm:open'),
   dmIncoming: call('dm:incoming'),
   notify: call('notify'),
+  setBadge: call('badge:set'),
   toastClick: call('toast:click'),
   onGoto: (handler) => ipcRenderer.on('goto', (_e, target) => handler(target)),
   pickFiles: call('file:pick'),

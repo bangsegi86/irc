@@ -1,6 +1,6 @@
 {
   "name": "sarangbang-client",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "description": "사랑방 채팅 클라이언트",
   "main": "main.js",
   "private": true,
@@ -15,8 +15,20 @@
   "build": {
     "appId": "kr.sarangbang.client",
     "productName": "Sarangbang",
-    "files": ["main.js", "preload.js", "renderer/**/*"],
-    "win": { "target": "nsis" },
-    "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true }
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "assets/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
   }
 }

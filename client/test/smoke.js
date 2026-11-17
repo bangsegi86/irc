@@ -88,6 +88,16 @@ async function run() {
     await until(() => js(win, `updateBar.hidden`), '나중에');
   }
 
+  // 1-3. 아이콘 파일이 제대로 들어 있다(창 아이콘·트레이·알림 점)
+  for (const name of ['icon.png', 'tray.png', 'tray@2x.png', 'tray-alert.png', 'tray-alert@2x.png', 'overlay-alert.png']) {
+    assert.equal(nativeImage.createFromPath(path.join(__dirname, '..', 'assets', name)).isEmpty(), false, `아이콘 ${name}`);
+  }
+  assert.deepEqual(nativeImage.createFromPath(path.join(__dirname, '..', 'assets', 'icon.png')).getSize(), { width: 256, height: 256 });
+  assert.ok(fs.statSync(path.join(__dirname, '..', 'assets', 'icon.ico')).size > 10000, '설치 파일용 아이콘');
+  assert.equal(await js(win, `window.api.setBadge(3)`), 3);
+  assert.equal(await js(win, `window.api.setBadge(0)`), 0);
+  assert.ok((await js(win, `getComputedStyle(document.querySelector('#sidebar .logo')).backgroundImage`)).includes('assets/icon.png'), '화면의 표지도 아이콘 그림이어야 함');
+
   // 2. 방 만들기
   step('2');
   await js(win, `btnCreate.click(); document.querySelector('#modalBody input').value=${JSON.stringify(roomName)}; modalOk.click()`);

@@ -228,3 +228,6 @@ body.dm #sidebar, body.dm #members { display: none; }
 body.dm .msg, body.dm .day { padding-left: 16px; padding-right: 16px; }
 body.dm #composer, body.dm #replyBar { margin-left: 12px; margin-right: 12px; }
 body.dm #chatHeader { padding: 0 16px; }
+
+/* 프로그램 표지: 아이콘 그림을 쓴다 */
+.logo { background: url(../assets/icon.png) center / cover no-repeat; border-radius: 0; }

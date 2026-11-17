@@ -156,17 +156,14 @@ function readLog(date) {
 }
 
 // ---------- 창·트레이 ----------
-function icon(color = [0xf5, 0x9c, 0x5b]) {
-  const size = 32, buf = Buffer.alloc(size * size * 4);
-  for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
-    const inside = Math.abs(x - 15.5) <= 12 && Math.abs(y - 15.5) <= 12; // 네모: 클라이언트(원)와 구분
-    if (inside) buf.set([...color, 0xff], (y * size + x) * 4);
-  }
-  return nativeImage.createFromBitmap(buf, { width: size, height: size });
-}
+// 아이콘: 짙은 회색 바탕의 하늘색 ㅅ + 받침대(클라이언트는 하늘색 바탕). 트레이에는 실행 중(초록 점)/중지(회색 점)를 표시
+const asset = (name) => path.join(here, '..', 'assets', name);
+const icon = () => nativeImage.createFromPath(asset('icon.png'));
+const trayIcon = () => nativeImage.createFromPath(asset(state.running ? 'tray-on.png' : 'tray-off.png'));
 function showWin() { if (!win) return; if (win.isMinimized()) win.restore(); win.show(); win.focus(); }
 function refreshTray() {
   if (!tray) return;
+  tray.setImage(trayIcon());
   tray.setToolTip(`사랑방 서버 — ${state.running ? `실행 중 (포트 ${state.port})` : '중지됨'}`);
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: '서버 화면 열기', click: showWin },
@@ -179,7 +176,7 @@ function refreshTray() {
 async function setup() {
   loadSettings();
   nativeTheme.themeSource = settings.theme;
-  try { tray = new Tray(icon()); tray.on('click', showWin); tray.on('double-click', showWin); } catch (e) { console.error('트레이 아이콘을 만들지 못했습니다.', e); }
+  try { tray = new Tray(trayIcon()); tray.on('click', showWin); tray.on('double-click', showWin); } catch (e) { console.error('트레이 아이콘을 만들지 못했습니다.', e); }
 
   win = new BrowserWindow({
     width: 1180, height: 760, minWidth: 760, minHeight: 520, title: '사랑방 서버', autoHideMenuBar: true, icon: icon(),
