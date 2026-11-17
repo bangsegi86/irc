@@ -22,6 +22,7 @@ contextBridge.exposeInMainWorld('api', {
   openFile: call('file:open'),
   showFile: call('file:show'),
   copyText: call('clipboard:write'),
+  openUrl: call('open:url'),
   getTheme: call('theme:get'),
   setTheme: call('theme:set'),
 });

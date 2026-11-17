@@ -192,7 +192,7 @@ const Editor = (() => {
     codeBtn.textContent = inCode ? '코드 밖으로' : '</> 코드';
     langSel.hidden = !inCode;
     if (pre) langSel.value = pre.dataset.lang;
-    hint.textContent = inCode ? "코드 블록 안 — Enter 줄바꿈 · Ctrl+Enter 전송 · '코드 밖으로' 버튼이나 ↓ 키로 블록을 벗어나 글을 이어 씁니다." : '';
+    hint.textContent = inCode ? "코드 블록 안 — Enter 줄바꿈 · Ctrl+Enter 전송 · '코드 밖으로' 버튼이나 ↓ 키로 블록 아래에서 글을 씁니다. (코드 블록은 메시지당 하나, 맨 위에 놓입니다)" : '';
   }
 
   function setLang(pre, lang) {
@@ -209,37 +209,52 @@ const Editor = (() => {
     sel.addRange(range);
   }
 
-  // 커서 위치에 코드 블록을 넣는다. 선택한 글자가 있으면 그 글자가 코드가 된다.
+  const thePre = () => input.querySelector('pre.codeEdit');
+
+  // 코드 블록 넣기. 블록은 메시지당 하나만, 항상 맨 위에 둔다(글은 그 아래에 쓴다).
+  // 선택한 글자가 있으면 그 글자가 코드가 된다. 이미 블록이 있으면 새로 만들지 않고 그 블록으로 간다.
   function insertCode(text = '', lang = 'auto') {
     input.focus();
+    const existing = thePre();
+    if (existing) { placeCaret(existing, false); activePre = existing; refreshToolbar(); return existing; }
     const sel = document.getSelection();
     const range = sel.rangeCount && input.contains(sel.anchorNode) ? sel.getRangeAt(0) : null;
     let content = text;
-    if (range && !range.collapsed) { if (!content) content = range.toString(); range.deleteContents(); }
+    if (range && !range.collapsed && !content) { content = range.toString(); range.deleteContents(); }
     const pre = document.createElement('pre');
     pre.className = 'codeEdit';
     pre.spellcheck = false;
     setLang(pre, lang);
     if (content) pre.textContent = content; else pre.append(document.createElement('br'));
-
-    const at = range ? range.startContainer : null;
-    if (!at) input.append(pre);
-    else if (at === input || (at.nodeType === Node.TEXT_NODE && at.parentNode === input)) range.insertNode(pre); // 글 중간이면 그 자리에서 나눈다
-    else { let top = at; while (top.parentNode !== input) top = top.parentNode; top.after(pre); }           // 서식 안이면 그 줄 뒤에
-    for (const side of [pre.previousSibling, pre.nextSibling]) if (side?.nodeType === Node.TEXT_NODE && !side.data) side.remove();
-    if (!pre.nextSibling) input.append(document.createElement('br')); // 블록 뒤에 글을 이어 쓸 자리
+    input.prepend(pre);
+    if (!pre.nextSibling) input.append(document.createElement('br')); // 블록 아래에 글을 쓸 자리
     placeCaret(pre, !content);
     activePre = pre;
     refreshToolbar();
     return pre;
   }
 
-  // 코드 블록을 벗어나 그 뒤에서 글을 이어 쓴다
+  // 규칙을 지킨다: 코드 블록은 하나만, 맨 위에. (블록 앞에 글을 치거나 되돌리기로 어긋난 경우를 바로잡는다)
+  function normalize() {
+    const pres = [...input.querySelectorAll('pre')];
+    if (!pres.length) return;
+    const sel = document.getSelection();
+    const saved = sel.rangeCount && input.contains(sel.anchorNode) ? { node: sel.anchorNode, offset: sel.anchorOffset } : null;
+    const [first, ...extra] = pres;
+    for (const p of extra) p.replaceWith(document.createTextNode(preText(p))); // 두 번째부터는 일반 글로
+    let changed = extra.length > 0;
+    if (first.parentNode !== input || [...input.childNodes].find((n) => !(n.nodeType === Node.TEXT_NODE && !n.data)) !== first) { input.prepend(first); changed = true; }
+    if (!first.nextSibling) { input.append(document.createElement('br')); }
+    if (changed && saved?.node.isConnected) { try { sel.collapse(saved.node, Math.min(saved.offset, saved.node.nodeType === Node.TEXT_NODE ? saved.node.length : saved.node.childNodes.length)); } catch { /* 커서 복원 실패는 무시 */ } }
+  }
+
+  // 코드 블록을 벗어나 글의 맨 끝에서 이어 쓴다
   function exitCode(pre) {
     if (!pre.nextSibling) input.append(document.createElement('br'));
+    const last = input.lastChild;
     const range = document.createRange();
-    range.setStartAfter(pre);
-    range.collapse(true);
+    if (last.nodeName === 'BR' && last.previousSibling === pre) range.setStartBefore(last); else range.selectNodeContents(input);
+    range.collapse(last.nodeName === 'BR' && last.previousSibling === pre);
     const sel = document.getSelection();
     sel.removeAllRanges();
     sel.addRange(range);
@@ -250,6 +265,7 @@ const Editor = (() => {
   function clear() {
     input.replaceChildren();
     activePre = null;
+    closeMention();
     refreshToolbar();
   }
   const focus = () => input.focus();
@@ -260,13 +276,65 @@ const Editor = (() => {
     return images.length && !e.clipboardData.getData('text/plain') ? images : [];
   }
 
+  // ---------- @호출 자동 완성: '@' 를 치면 방 구성원 목록이 뜨고, 방향키로 고른 뒤 Enter ----------
+  const mention = { open: false, items: [], index: 0, node: null, start: 0, end: 0 };
+  let mentionBox, getMembers = () => [], memberRow = (m) => [m.nick];
+
+  function closeMention() {
+    mention.open = false;
+    if (mentionBox) mentionBox.hidden = true;
+  }
+
+  function renderMention() {
+    mentionBox.hidden = false;
+    mentionBox.replaceChildren(el('div', { className: 'mTitle' }, '호출할 사람 — ↑↓ 로 고르고 Enter'), ...mention.items.map((m, i) => {
+      const item = el('div', { className: `mItem ${i === mention.index ? 'on' : ''}`, role: 'option', ariaSelected: String(i === mention.index) }, ...memberRow(m));
+      item.addEventListener('mousedown', (e) => e.preventDefault()); // 입력란의 커서를 유지
+      item.addEventListener('click', () => chooseMention(m));
+      return item;
+    }));
+    mentionBox.querySelector('.mItem.on')?.scrollIntoView({ block: 'nearest' });
+  }
+
+  function updateMention() {
+    const sel = document.getSelection();
+    const node = sel.anchorNode;
+    if (!sel.isCollapsed || !node || node.nodeType !== Node.TEXT_NODE || !input.contains(node) || currentPre()) return closeMention();
+    const m = /(?:^|\s)@([^\s@]{0,20})$/u.exec(node.data.slice(0, sel.anchorOffset));
+    if (!m) return closeMention();
+    const query = m[1].toLowerCase();
+    const all = getMembers();
+    const items = [...all.filter((u) => u.nick.toLowerCase().startsWith(query)), ...all.filter((u) => !u.nick.toLowerCase().startsWith(query) && u.nick.toLowerCase().includes(query))].slice(0, 8);
+    if (!items.length) return closeMention();
+    const keep = mention.open ? mention.items[mention.index]?.id : null;
+    Object.assign(mention, { open: true, items, node, start: sel.anchorOffset - m[1].length - 1, end: sel.anchorOffset });
+    mention.index = Math.max(0, items.findIndex((u) => u.id === keep));
+    renderMention();
+  }
+
+  function chooseMention(member) {
+    const range = document.createRange();
+    range.setStart(mention.node, mention.start);
+    range.setEnd(mention.node, Math.min(mention.end, mention.node.length));
+    const sel = document.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    document.execCommand('insertText', false, `@${member.nick} `); // '@글자' 를 '@닉네임 ' 으로 바꾼다
+    closeMention();
+    input.focus();
+  }
+
   function init(opts) {
     onSend = opts.onSend;
+    if (opts.getMembers) getMembers = opts.getMembers;
+    if (opts.memberRow) memberRow = opts.memberRow;
     input = document.getElementById('input');
     toolbar = document.getElementById('toolbar');
     langSel = document.getElementById('codeLang');
     hint = document.getElementById('composeHint');
     codeBtn = document.getElementById('btnCode');
+    mentionBox = el('div', { id: 'mentionBox', role: 'listbox', ariaLabel: '호출할 사람', hidden: true });
+    document.getElementById('composer').append(mentionBox);
 
     const probe = document.createElement('span');
     for (const [key, hex] of Object.entries(PALETTE)) { probe.style.backgroundColor = hex; colorKey[probe.style.backgroundColor] = key; }
@@ -277,7 +345,7 @@ const Editor = (() => {
     toolbar.addEventListener('mousedown', (e) => { if (e.target.closest('button')) e.preventDefault(); });
     toolbar.addEventListener('click', (e) => {
       const b = e.target.closest('button');
-      if (!b) return;
+      if (!b || b.id === 'btnAttach') return;
       if (b.id === 'btnCode') { const pre = currentPre() || (document.activeElement === langSel ? activePre : null); if (pre) exitCode(pre); else insertCode(); return; }
       if (currentPre()) return; // 코드 블록 안에서는 글자 서식을 쓰지 않는다
       if (b.dataset.cmd) exec(b.dataset.cmd);
@@ -290,9 +358,14 @@ const Editor = (() => {
       refreshToolbar();
     });
     langSel.addEventListener('blur', refreshToolbar);
-    document.addEventListener('selectionchange', refreshToolbar);
+    document.addEventListener('selectionchange', () => { refreshToolbar(); if (mention.open) updateMention(); });
 
     input.addEventListener('keydown', (e) => {
+      if (mention.open) { // 호출 목록이 떠 있는 동안
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); mention.index = (mention.index + (e.key === 'ArrowDown' ? 1 : mention.items.length - 1)) % mention.items.length; renderMention(); return; }
+        if ((e.key === 'Enter' || e.key === 'Tab') && !e.isComposing) { e.preventDefault(); chooseMention(mention.items[mention.index]); return; }
+        if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeMention(); return; }
+      }
       const pre = currentPre();
       if (e.key === 'Enter' && !e.isComposing) { // 한글 조합 중의 Enter는 건드리지 않는다
         if (pre && !(e.ctrlKey || e.metaKey)) { e.preventDefault(); document.execCommand('insertLineBreak'); return; } // 코드 안: 줄바꿈
@@ -304,7 +377,8 @@ const Editor = (() => {
       if (e.key === 'Backspace' && !preText(pre)) { e.preventDefault(); const next = pre.nextSibling; pre.remove(); if (next?.isConnected) placeCaret(next, true); cleanup(); refreshToolbar(); } // 빈 블록은 지운다
     });
     const cleanup = () => { if (!input.textContent && !input.querySelector('pre, br + br')) input.replaceChildren(); };
-    input.addEventListener('input', cleanup);
+    input.addEventListener('input', () => { normalize(); cleanup(); updateMention(); });
+    input.addEventListener('blur', () => setTimeout(() => { if (document.activeElement !== input) closeMention(); }, 150));
     input.addEventListener('paste', (e) => {
       if (imagesIn(e).length) return; // 이미지는 화면 쪽에서 미리보기로 처리한다
       // 다른 프로그램의 서식은 버리고 글자만 붙인다
@@ -321,8 +395,8 @@ const Editor = (() => {
         range.collapse(true);
         return;
       }
-      // 여러 줄 코드·쿼리면 그 자리에 코드 블록으로 넣는다
-      const lang = text.includes('\n') ? detectLang(text) : null;
+      // 여러 줄 코드·쿼리면 코드 블록으로 넣는다(블록이 이미 있으면 일반 글로 붙인다)
+      const lang = text.includes('\n') && !thePre() ? detectLang(text) : null;
       if (lang) insertCode(text, lang);
       else document.execCommand('insertText', false, text);
     });

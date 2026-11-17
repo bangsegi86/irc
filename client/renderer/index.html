@@ -39,7 +39,7 @@
       </div>
       <footer id="meBar">
         <span id="meAvatar"></span>
-        <span class="meText"><strong id="meNick"></strong><small>접속 중</small></span>
+        <button type="button" id="btnRename" class="meText" title="닉네임 변경"><strong id="meNick"></strong><small>이름 변경</small></button>
         <button id="btnTheme" class="ghost" title="화면 밝기 바꾸기 (시스템 설정 따르기 → 밝게 → 어둡게)">시스템</button>
         <button id="btnLogout" class="ghost" title="로그아웃">나가기</button>
       </footer>
@@ -67,6 +67,8 @@
           <button type="button" id="btnPasteCancel" title="취소 (Esc)">취소</button>
         </div>
         <div id="toolbar">
+          <button type="button" id="btnAttach" class="attach" title="파일·이미지 보내기" aria-label="파일·이미지 보내기"><svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11.5 12 19.5a5 5 0 0 1-7-7l8.5-8.5a3.3 3.3 0 0 1 4.7 4.7L9.8 17.1a1.7 1.7 0 0 1-2.4-2.4L15 7"/></svg></button>
+          <span class="sep"></span>
           <button type="button" class="fmt" data-cmd="bold" title="굵게 (Ctrl+B)"><b>가</b></button>
           <button type="button" class="fmt" data-cmd="italic" title="기울임 (Ctrl+I)"><i>가</i></button>
           <button type="button" class="fmt" data-cmd="underline" title="밑줄 (Ctrl+U)"><u>가</u></button>
@@ -82,13 +84,12 @@
           <button type="button" class="fmt sz-l" data-size="l" title="크게">가</button>
           <button type="button" class="fmt sz-xl" data-size="xl" title="아주 크게">가</button>
           <span class="sep fmt"></span>
-          <button type="button" class="fmt" id="btnClearFmt" title="선택한 글자의 서식 지우기">서식 지움</button>
+          <button type="button" class="fmt" id="btnClearFmt" title="선택한 글자의 서식 지우기">지움</button>
           <span class="grow"></span>
           <select id="codeLang" hidden title="코드 언어"></select>
           <button type="button" id="btnCode" title="코드·쿼리 블록 넣기 / 블록에서 나오기">&lt;/&gt; 코드</button>
         </div>
         <div id="composeRow">
-          <button type="button" id="btnAttach" class="ghost iconBtn big" title="파일·이미지 보내기" aria-label="파일·이미지 보내기"><svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11.5 12 19.5a5 5 0 0 1-7-7l8.5-8.5a3.3 3.3 0 0 1 4.7 4.7L9.8 17.1a1.7 1.7 0 0 1-2.4-2.4L15 7"/></svg></button>
           <div id="input" contenteditable="true" spellcheck="false" data-placeholder="메시지 입력 (@닉네임으로 호출)" title="Enter 전송, Shift+Enter 줄바꿈"></div>
           <button type="submit" id="btnSend" class="primary iconBtn big" title="보내기 (Enter)" aria-label="보내기"><svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12 20 4l-6 16-3-7z"/></svg></button>
         </div>

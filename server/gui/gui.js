@@ -26,7 +26,7 @@ const CATS = [
 ];
 const KIND_CAT = {
   '접속 시도': 'conn', '접속 종료': 'conn',
-  '가입': 'login', '로그인 성공': 'login', '로그인 실패': 'login', '가입 실패': 'login',
+  '가입': 'login', '닉네임 변경': 'login', '로그인 성공': 'login', '로그인 실패': 'login', '가입 실패': 'login',
   '방 생성': 'room', '방 입장': 'room', '방 나감': 'room', '초대': 'room', '초대 수락': 'room', '초대 거절': 'room',
   '메시지': 'msg', '1:1 메시지': 'msg', '호출': 'msg',
   '파일 요청': 'file', '파일 전송 시작': 'file', '파일 전송 완료': 'file', '파일 전송 취소': 'file', '파일 원본 없음': 'file',
@@ -35,7 +35,7 @@ const KIND_CAT = {
 const PROBLEMS = new Set(['로그인 실패', '가입 실패', '요청 실패', '파일 전송 취소', '파일 원본 없음', '서버 시작 실패']);
 const REASONS = {
   bad_login: '닉네임 또는 비밀번호가 틀림', bad_token: '저장된 로그인이 만료됨(다른 서버 데이터이거나 초기화됨)', bad_server_password: '서버 접속 암호가 틀림',
-  nick_taken: '이미 있는 닉네임', bad_nick: '닉네임 형식이 맞지 않음', bad_password: '비밀번호가 너무 짧음', auth: '로그인하지 않고 요청함',
+  nick_taken: '이미 있는 닉네임', same_nick: '지금 닉네임과 같음', bad_nick: '닉네임 형식이 맞지 않음', bad_password: '비밀번호가 너무 짧음', auth: '로그인하지 않고 요청함',
   not_member: '그 방의 구성원이 아님', no_room: '없는 방', private_room: '비공개 방(초대 필요)', name_taken: '같은 이름의 방이 있음', bad_name: '방 이름 형식이 맞지 않음',
   no_user: '없는 사용자', already_member: '이미 방에 있는 사용자', no_invite: '없는 초대', self: '자기 자신을 대상으로 함',
   empty: '빈 메시지', too_long: '메시지가 너무 김', bad_reply: '답글 대상이 없음', bad_file: '파일 정보가 잘못됨', bad_rich: '서식 정보가 잘못됨',
@@ -43,7 +43,7 @@ const REASONS = {
   EADDRINUSE: '포트를 다른 프로그램이 사용 중',
 };
 const reason = (code) => (REASONS[code] ? `${REASONS[code]}` : String(code || '알 수 없음'));
-const REQUESTS = { 'room.join': '방 입장', 'room.create': '방 만들기', 'room.leave': '방 나가기', 'room.invite': '초대', 'room.list': '방 목록 보기', 'msg.send': '메시지 보내기', history: '지난 대화 보기', call: '호출', 'file.request': '파일 받기', 'file.accept': '파일 보내기', 'invite.accept': '초대 수락', 'users.list': '사용자 목록 보기', 'notice.clear': '알림 지우기' };
+const REQUESTS = { 'user.rename': '닉네임 변경', 'room.join': '방 입장', 'room.create': '방 만들기', 'room.leave': '방 나가기', 'room.invite': '초대', 'room.list': '방 목록 보기', 'msg.send': '메시지 보내기', history: '지난 대화 보기', call: '호출', 'file.request': '파일 받기', 'file.accept': '파일 보내기', 'invite.accept': '초대 수락', 'users.list': '사용자 목록 보기', 'notice.clear': '알림 지우기' };
 
 // 한 건을 문장으로. [본문, 덧붙임(흐리게)]
 function describe(kind, f) {
@@ -51,6 +51,7 @@ function describe(kind, f) {
     case '접속 시도': return ['서버에 연결했습니다', '아직 로그인 전'];
     case '접속 종료': return ['연결을 끊었습니다', f.접속시간 ? `머문 시간 ${duration(parseInt(f.접속시간, 10))}` : ''];
     case '가입': return ['새로 가입했습니다', ''];
+    case '닉네임 변경': return [`닉네임을 '${f.이전}' 에서 '${f.닉네임}' (으)로 바꿨습니다`, ''];
     case '로그인 성공': return ['로그인했습니다', f.방식 || ''];
     case '로그인 실패': return [`로그인 실패 — ${reason(f.사유)}`, ''];
     case '가입 실패': return [`가입 실패 — ${reason(f.사유)}`, ''];

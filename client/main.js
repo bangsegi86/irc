@@ -258,6 +258,8 @@ function setup() {
 
   ipcMain.handle('theme:get', () => nativeTheme.themeSource);
   ipcMain.handle('theme:set', (_e, theme) => setTheme(theme));
+  // 메시지 속 웹 주소는 기본 브라우저로 연다(http/https 만)
+  ipcMain.handle('open:url', (_e, url) => (/^https?:\/\//i.test(String(url)) ? shell.openExternal(String(url)) : null));
   ipcMain.handle('clipboard:write', (_e, text) => clipboard.writeText(String(text)));
   ipcMain.handle('pasted:openFolder', () => shell.openPath(pastedDir()));
   ipcMain.handle('pasted:dir', () => pastedDir());
