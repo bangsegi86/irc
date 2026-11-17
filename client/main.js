@@ -4,7 +4,9 @@ const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
-const { randomUUID } = require('node:crypto');
+const { randomUUID, createHash } = require('node:crypto');
+const { spawn } = require('node:child_process');
+const APP_VERSION = require('./package.json').version;
 
 // P2P 직접 전송이 같은 공유기 안에서도 잘 연결되도록 내부 IP 숨김(mDNS)을 끈다
 app.commandLine.appendSwitch('disable-features', 'WebRtcHideLocalIpsWithMdns');
@@ -260,6 +262,44 @@ function setup() {
   ipcMain.handle('theme:set', (_e, theme) => setTheme(theme));
   // 메시지 속 웹 주소는 기본 브라우저로 연다(http/https 만)
   ipcMain.handle('open:url', (_e, url) => (/^https?:\/\//i.test(String(url)) ? shell.openExternal(String(url)) : null));
+  // ---------- 업데이트: 우리 서버에 등록된 새 설치 파일을 내려받아 실행한다 ----------
+  let downloadedUpdate = null;
+  ipcMain.handle('app:info', () => ({ version: APP_VERSION, packaged: app.isPackaged, platform: process.env.SARANGBANG_PLATFORM || process.platform }));
+  ipcMain.handle('update:download', async (e, { url, sha256, name }) => {
+    if (!/^https?:\/\//i.test(String(url))) throw new Error('업데이트 주소가 올바르지 않습니다.');
+    const dir = path.join(app.getPath('userData'), 'updates');
+    await fsp.rm(dir, { recursive: true, force: true }); // 지난 설치 파일은 지운다
+    await fsp.mkdir(dir, { recursive: true });
+    const safe = path.basename(String(name || 'Sarangbang-Setup.exe')).replace(/[<>:"/\\|?*\x00-\x1f]/g, '_');
+    const target = path.join(dir, /\.exe$/i.test(safe) ? safe : `${safe}.exe`);
+    const res = await fetch(String(url));
+    if (!res.ok) throw new Error(res.status === 401 ? '로그인이 만료되어 받을 수 없습니다. 다시 로그인해 주세요.' : res.status === 404 ? '서버에 등록된 업데이트가 없습니다.' : `서버가 업데이트 파일을 주지 않았습니다(${res.status}).`);
+    const total = Number(res.headers.get('content-length')) || 0;
+    const hash = createHash('sha256');
+    const out = fs.createWriteStream(target);
+    let received = 0, lastSent = 0;
+    try {
+      for await (const chunk of res.body) {
+        hash.update(chunk);
+        received += chunk.length;
+        if (!out.write(chunk)) await new Promise((r) => out.once('drain', r));
+        if (Date.now() - lastSent > 100) { lastSent = Date.now(); if (!e.sender.isDestroyed()) e.sender.send('update:progress', { received, total }); }
+      }
+      await new Promise((resolve, reject) => out.end((err) => (err ? reject(err) : resolve())));
+    } catch (err) { out.destroy(); await fsp.rm(target, { force: true }); throw new Error(`내려받다가 끊겼습니다: ${err.message}`); }
+    if (sha256 && hash.digest('hex') !== String(sha256).toLowerCase()) { await fsp.rm(target, { force: true }); throw new Error('받은 파일이 서버의 파일과 다릅니다(손상됨). 다시 시도해 주세요.'); }
+    downloadedUpdate = target;
+    return { path: target, size: received };
+  });
+  ipcMain.handle('update:run', () => {
+    if (!downloadedUpdate || !fs.existsSync(downloadedUpdate)) throw new Error('먼저 업데이트 파일을 받아야 합니다.');
+    if (process.env.SARANGBANG_NO_RUN) return { skipped: true, path: downloadedUpdate }; // 자동 점검용
+    spawn(downloadedUpdate, [], { detached: true, stdio: 'ignore' }).unref(); // 설치 프로그램을 띄우고
+    quitting = true;
+    setTimeout(() => app.quit(), 300);                                        // 이 프로그램은 닫는다(설치가 덮어쓸 수 있게)
+    return { skipped: false };
+  });
+
   ipcMain.handle('clipboard:write', (_e, text) => clipboard.writeText(String(text)));
   ipcMain.handle('pasted:openFolder', () => shell.openPath(pastedDir()));
   ipcMain.handle('pasted:dir', () => pastedDir());

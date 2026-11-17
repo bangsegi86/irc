@@ -11,6 +11,7 @@
     <div class="brand"><span class="logo" aria-hidden="true"></span><strong>사랑방 서버</strong></div>
     <button class="tab on" data-view="home">현황</button>
     <button class="tab" data-view="log">기록 <span id="navProblems" class="badge" hidden></span></button>
+    <button class="tab" data-view="update">업데이트 <span id="navOutdated" class="badge" hidden></span></button>
     <button class="tab" data-view="settings">설정</button>
     <div class="grow"></div>
     <div id="navStatus"><span class="dot"></span><span id="navStatusText">확인 중…</span></div>
@@ -39,7 +40,7 @@
       </div>
 
       <h2>지금 접속한 사람</h2>
-      <div class="tableWrap"><table id="connTable"><thead><tr><th>닉네임</th><th>IP 주소</th><th>접속한 지</th></tr></thead><tbody></tbody></table></div>
+      <div class="tableWrap"><table id="connTable"><thead><tr><th>닉네임</th><th>IP 주소</th><th>프로그램 버전</th><th>접속한 지</th></tr></thead><tbody></tbody></table></div>
 
       <h2>최근 문제 <button id="btnSeeProblems" class="ghost">기록에서 모두 보기</button></h2>
       <div id="recentProblems" class="logList compact"></div>
@@ -63,6 +64,25 @@
       <div class="logHead" aria-hidden="true"><span>시각</span><span>종류</span><span>누가</span><span>IP 주소</span><span>무슨 일</span></div>
       <div id="logList" class="logList" role="log" aria-label="서버 기록"></div>
       <p id="logCount" class="hint"></p>
+    </section>
+
+    <!-- 업데이트 -->
+    <section id="view-update" class="view" hidden>
+      <div class="card form">
+        <h2>클라이언트 새 버전 배포</h2>
+        <p class="hint">새로 만든 클라이언트 설치 파일(.exe)을 여기에 등록하면, 접속한 사람의 프로그램에 "새 버전이 있습니다" 안내가 뜨고 <b>이 서버에서 바로 내려받아</b> 설치합니다. 인터넷이 없어도 됩니다.</p>
+        <div id="updCurrent" class="updBox"></div>
+        <div class="row"><button type="button" id="btnUpdPick" class="primary">설치 파일 등록…</button><button type="button" id="btnUpdClear" hidden>등록 해제</button></div>
+        <form id="updForm" hidden>
+          <p class="hint">고른 파일: <code id="updFile"></code></p>
+          <label>이 설치 파일의 버전 <small>파일 이름에서 읽었습니다. 다르면 고쳐 주세요. 접속자의 프로그램이 이 숫자보다 낮으면 업데이트 안내가 뜹니다.</small><input id="updVersion" required placeholder="0.11.0"></label>
+          <div class="row"><button type="submit" class="primary">이 버전으로 배포</button><button type="button" id="btnUpdCancel">취소</button></div>
+        </form>
+        <p id="updMsg" class="hint"></p>
+      </div>
+      <h2>접속자의 프로그램 버전</h2>
+      <div class="tableWrap"><table id="verTable"><thead><tr><th>닉네임</th><th>프로그램 버전</th><th>상태</th></tr></thead><tbody></tbody></table></div>
+      <p class="hint">설치 파일은 <code>client</code> 폴더에서 <code>npm run dist</code> 로 만들면 <code>client\dist</code> 에 생깁니다. 서버에 보관되는 것은 이 설치 파일 하나뿐입니다.</p>
     </section>
 
     <!-- 설정 -->

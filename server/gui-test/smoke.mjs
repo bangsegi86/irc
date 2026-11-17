@@ -85,6 +85,30 @@ async function run() {
   await b.req('msg.send', { toUserId: bob.user.id, text: '혼잣말' });
   await until(() => js(`document.querySelectorAll('#logList .logRow').length === ${before + 1}`), '새 기록 실시간 추가');
 
+  // 5-2. 업데이트 배포: 설치 파일을 등록하면 접속자에게 알리고, 서버에서 내려받을 수 있고, 구버전 접속자가 표시된다
+  const events = [];
+  b.ws.on('message', (d, bin) => { if (!bin) { const m = JSON.parse(d.toString()); if (m.t === 'update.available') events.push(m); } });
+  const old = await client(PORT);
+  const oldSession = await old.req('login', { nick: '세기', password: 'pass1234', client: { version: '0.1.0', platform: 'win32' } });
+  assert.equal(oldSession.clientUpdate, null);
+  const installer = path.join(tmp, 'Sarangbang Setup 9.8.7.exe');
+  const bytes = (await import('node:crypto')).randomBytes(200_000);
+  fs.writeFileSync(installer, bytes);
+  await js(`document.querySelector('[data-view="update"]').click()`);
+  assert.match(await js(`updCurrent.textContent`), /등록된 설치 파일이 없습니다/);
+  assert.match(await js(`window.srv.registerUpdate({ path: ${JSON.stringify(installer)}, version: 'abc' }).then(() => 'ok', (e) => e.message)`), /숫자와 점/);
+  await js(`window.srv.registerUpdate({ path: ${JSON.stringify(installer)}, version: '9.8.7' })`);
+  await until(() => js(`/버전 9\.8\.7/.test(updCurrent.textContent) && !btnUpdClear.hidden`), '등록한 버전 표시');
+  await until(() => events.length === 1, '접속자에게 새 버전 알림');
+  assert.equal(events[0].update.version, '9.8.7');
+  const got = await fetch(`http://127.0.0.1:${PORT}/update/client?token=${oldSession.token}`);
+  assert.ok(Buffer.from(await got.arrayBuffer()).equals(bytes), '서버에서 받은 설치 파일이 등록한 것과 같아야 함');
+  await until(() => js(`[...verTable.tBodies[0].rows].some((r) => r.cells[1].textContent === '0.1.0' && /구버전/.test(r.cells[2].textContent)) && !navOutdated.hidden`), '구버전 접속자 표시', 6000);
+  await shot('server-update.png');
+  await js(`document.querySelector('[data-view="log"]').click()`);
+  await until(() => js(`/클라이언트 새 버전 9\.8\.7 을 배포하기 시작했습니다/.test(logList.innerText) && /새 버전 9\.8\.7 설치 파일을 내려받았습니다/.test(logList.innerText)`), '배포·내려받기 기록');
+  old.ws.close();
+
   // 6. 설정: 포트를 바꿔 저장하면 서버가 새 포트로 다시 시작되고 파일에 저장된다
   await js(`document.querySelector('[data-view="settings"]').click()`);
   assert.equal(await js(`sPort.value`), String(PORT));

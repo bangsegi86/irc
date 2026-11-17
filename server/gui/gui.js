@@ -31,6 +31,7 @@ const KIND_CAT = {
   '메시지': 'msg', '1:1 메시지': 'msg', '호출': 'msg',
   '파일 요청': 'file', '파일 전송 시작': 'file', '파일 전송 완료': 'file', '파일 전송 취소': 'file', '파일 원본 없음': 'file',
   '서버 시작': 'server', '서버 중지': 'server', '서버 시작 실패': 'server', '요청 실패': 'server',
+  '업데이트 등록': 'server', '업데이트 해제': 'server', '업데이트 받기': 'file',
 };
 const PROBLEMS = new Set(['로그인 실패', '가입 실패', '요청 실패', '파일 전송 취소', '파일 원본 없음', '서버 시작 실패']);
 const REASONS = {
@@ -43,7 +44,7 @@ const REASONS = {
   EADDRINUSE: '포트를 다른 프로그램이 사용 중',
 };
 const reason = (code) => (REASONS[code] ? `${REASONS[code]}` : String(code || '알 수 없음'));
-const REQUESTS = { 'user.rename': '닉네임 변경', 'room.join': '방 입장', 'room.create': '방 만들기', 'room.leave': '방 나가기', 'room.invite': '초대', 'room.list': '방 목록 보기', 'msg.send': '메시지 보내기', history: '지난 대화 보기', call: '호출', 'file.request': '파일 받기', 'file.accept': '파일 보내기', 'invite.accept': '초대 수락', 'users.list': '사용자 목록 보기', 'notice.clear': '알림 지우기' };
+const REQUESTS = { '업데이트 받기': '업데이트 받기', 'user.rename': '닉네임 변경', 'room.join': '방 입장', 'room.create': '방 만들기', 'room.leave': '방 나가기', 'room.invite': '초대', 'room.list': '방 목록 보기', 'msg.send': '메시지 보내기', history: '지난 대화 보기', call: '호출', 'file.request': '파일 받기', 'file.accept': '파일 보내기', 'invite.accept': '초대 수락', 'users.list': '사용자 목록 보기', 'notice.clear': '알림 지우기' };
 
 // 한 건을 문장으로. [본문, 덧붙임(흐리게)]
 function describe(kind, f) {
@@ -52,7 +53,7 @@ function describe(kind, f) {
     case '접속 종료': return ['연결을 끊었습니다', f.접속시간 ? `머문 시간 ${duration(parseInt(f.접속시간, 10))}` : ''];
     case '가입': return ['새로 가입했습니다', ''];
     case '닉네임 변경': return [`닉네임을 '${f.이전}' 에서 '${f.닉네임}' (으)로 바꿨습니다`, ''];
-    case '로그인 성공': return ['로그인했습니다', f.방식 || ''];
+    case '로그인 성공': return ['로그인했습니다', [f.방식, f.버전 && `프로그램 ${f.버전}`].filter(Boolean).join(' · ')];
     case '로그인 실패': return [`로그인 실패 — ${reason(f.사유)}`, ''];
     case '가입 실패': return [`가입 실패 — ${reason(f.사유)}`, ''];
     case '방 생성': return [`방 '${f.방}' 을 만들었습니다`, f.공개 === '예' ? '공개 방' : '비공개 방'];
@@ -72,6 +73,9 @@ function describe(kind, f) {
     case '요청 실패': return [`${REQUESTS[f.요청] || f.요청} 실패 — ${reason(f.사유)}`, f.요청 || ''];
     case '서버 시작': return [`서버를 시작했습니다`, [f.포트 && `포트 ${f.포트}`, f.참고].filter(Boolean).join(' · ')];
     case '서버 중지': return ['서버를 중지했습니다', ''];
+    case '업데이트 등록': return [`클라이언트 새 버전 ${f.버전} 을 배포하기 시작했습니다`, [f.크기 != null && size(f.크기), f.참고].filter(Boolean).join(' · ')];
+    case '업데이트 해제': return ['클라이언트 새 버전 배포를 멈췄습니다', ''];
+    case '업데이트 받기': return [`새 버전 ${f.버전} 설치 파일을 내려받았습니다`, f.크기 != null ? size(f.크기) : ''];
     case '서버 시작 실패': return [`서버를 시작하지 못했습니다 — ${reason(f.사유)}`, f.포트 ? `포트 ${f.포트}` : ''];
     default: return [kind, Object.entries(f).filter(([k]) => k !== 'ip' && k !== '닉네임').map(([k, v]) => `${k} ${v}`).join(' · ')];
   }
@@ -168,6 +172,28 @@ function renderProblems() {
   $('recentProblems').replaceChildren(...(items.length ? items.map((e) => row(e)) : [el('div', { className: 'logEmpty' }, '오늘 기록된 문제가 없습니다.')]));
 }
 
+// ---------------- 업데이트(배포) ----------------
+// 버전 비교: a 가 b 보다 낮으면 음수
+function cmpVersion(a, b) {
+  const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number);
+  for (let i = 0; i < Math.max(x.length, y.length); i++) { const d = (x[i] || 0) - (y[i] || 0); if (d) return d; }
+  return 0;
+}
+const isOutdated = (version) => !!ui.state?.clientUpdate && (!version || cmpVersion(version, ui.state.clientUpdate.version) < 0);
+function versionCell(version) {
+  const cell = el('td', {}, version || '알 수 없음');
+  if (ui.state?.clientUpdate) cell.append(el('span', { className: `tag ${isOutdated(version) ? '' : 'ok'}` }, isOutdated(version) ? '구버전' : '최신'));
+  return cell;
+}
+function renderUpdate() {
+  const u = ui.state?.clientUpdate;
+  $('updCurrent').replaceChildren(...(u ? [el('div', {}, '지금 배포 중: ', el('b', {}, `버전 ${u.version}`)), el('small', {}, `${u.name} · ${size(u.size)} · ${new Date(u.at).toLocaleString('ko-KR')} 등록`)]
+    : [el('span', { className: 'hint' }, '등록된 설치 파일이 없습니다. 접속자에게 업데이트 안내가 가지 않습니다.')]));
+  $('btnUpdClear').hidden = !u;
+  $('btnUpdPick').textContent = u ? '다른 설치 파일로 바꾸기…' : '설치 파일 등록…';
+}
+let picked = null;
+
 // ---------------- 현황 ----------------
 function renderState(s) {
   ui.state = s;
@@ -188,6 +214,7 @@ function renderState(s) {
   $('localAddr').textContent = `localhost:${s.port ?? s.settings.port}`;
   $('logOff').hidden = s.settings.log;
   $('dataPath').textContent = s.dataDir;
+  renderUpdate();
   tick();
 }
 
@@ -202,7 +229,13 @@ async function tick() {
   $('stMessages').textContent = st ? `${st.messages.toLocaleString('ko-KR')}건` : '–';
   const body = $('connTable').tBodies[0];
   const conns = st ? [...st.connections].sort((a, b) => a.nick.localeCompare(b.nick, 'ko') || a.since - b.since) : [];
-  body.replaceChildren(...(conns.length ? conns.map((c) => el('tr', {}, el('td', {}, el('b', {}, c.nick)), el('td', { className: 'mono' }, c.ip), el('td', {}, duration((Date.now() - c.since) / 1000))))
+  body.replaceChildren(...(conns.length ? conns.map((c) => el('tr', {}, el('td', {}, el('b', {}, c.nick)), el('td', { className: 'mono' }, c.ip), versionCell(c.version), el('td', {}, duration((Date.now() - c.since) / 1000))))
+    : [el('tr', {}, el('td', { className: 'empty', colSpan: 4 }, s.running ? '지금 접속한 사람이 없습니다.' : '서버가 꺼져 있습니다.'))]));
+  const outdated = conns.filter((c) => isOutdated(c.version));
+  $('navOutdated').hidden = !outdated.length;
+  $('navOutdated').textContent = String(new Set(outdated.map((c) => c.nick)).size);
+  $('verTable').tBodies[0].replaceChildren(...(conns.length ? conns.map((c) => el('tr', {}, el('td', {}, el('b', {}, c.nick)), el('td', { className: 'mono' }, c.version || '알 수 없음'),
+    el('td', {}, !s.clientUpdate ? '–' : isOutdated(c.version) ? `구버전 — ${s.clientUpdate.version} 안내가 표시됩니다` : '최신')))
     : [el('tr', {}, el('td', { className: 'empty', colSpan: 3 }, s.running ? '지금 접속한 사람이 없습니다.' : '서버가 꺼져 있습니다.'))]));
 }
 
@@ -219,7 +252,7 @@ const readSettings = () => ({
 function show(view) {
   ui.view = view;
   for (const t of document.querySelectorAll('.tab')) t.classList.toggle('on', t.dataset.view === view);
-  for (const v of ['home', 'log', 'settings']) $(`view-${v}`).hidden = v !== view;
+  for (const v of ['home', 'log', 'update', 'settings']) $(`view-${v}`).hidden = v !== view;
   if (view === 'log') { loadDates(); renderLog(); }
   if (view === 'settings') { fillSettings(ui.state.settings); $('settingsMsg').textContent = ''; }
 }
@@ -239,6 +272,18 @@ async function init() {
   };
   $('btnLogFolder').onclick = $('btnOpenLogs').onclick = () => window.srv.openLogs();
   $('btnOpenData').onclick = () => window.srv.openData();
+  const showPicked = (p) => { picked = p; $('updForm').hidden = !p; if (p) { $('updFile').textContent = `${p.name} (${size(p.size)})`; $('updVersion').value = p.version; $('updMsg').textContent = ''; } };
+  $('btnUpdPick').onclick = async () => showPicked(await window.srv.pickUpdate());
+  $('btnUpdCancel').onclick = () => showPicked(null);
+  $('btnUpdClear').onclick = async () => { await window.srv.clearUpdate(); $('updMsg').textContent = '배포를 멈췄습니다. 더 이상 업데이트 안내가 가지 않습니다.'; };
+  $('updForm').onsubmit = async (e) => {
+    e.preventDefault();
+    try {
+      const u = await window.srv.registerUpdate({ path: picked.path, version: $('updVersion').value });
+      showPicked(null);
+      $('updMsg').textContent = `버전 ${u.version} 배포를 시작했습니다. 접속 중인 사람에게 바로 안내가 가고, 이후 접속하는 사람에게도 안내됩니다.`;
+    } catch (err) { $('updMsg').textContent = String(err.message || err).replace(/^Error invoking remote method '[^']+': (Error: )?/, ''); }
+  };
   $('btnReset').onclick = () => { fillSettings(ui.state.settings); $('settingsMsg').textContent = '저장된 값으로 되돌렸습니다.'; };
   $('settingsForm').onsubmit = async (e) => {
     e.preventDefault();
