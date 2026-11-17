@@ -9,6 +9,12 @@ const { randomUUID } = require('node:crypto');
 // P2P 직접 전송이 같은 공유기 안에서도 잘 연결되도록 내부 IP 숨김(mDNS)을 끈다
 app.commandLine.appendSwitch('disable-features', 'WebRtcHideLocalIpsWithMdns');
 
+// 테스트용 두 번째 클라이언트: SARANGBANG_PROFILE 을 주면 로그인 정보·설정을 따로 쓰는 별도 프로그램처럼 뜬다.
+// 한 PC에서 계정 두 개로 대화를 시험할 때 쓴다(start-client-2.bat).
+const PROFILE = (process.env.SARANGBANG_PROFILE || '').replace(/[^\w-]/g, '').slice(0, 20);
+if (PROFILE) app.setPath('userData', path.join(app.getPath('appData'), `${app.getName()}-${PROFILE}`));
+const APP_TITLE = PROFILE ? `사랑방 (테스트용 ${PROFILE})` : '사랑방';
+
 const TOAST_MS = 5000;       // 알림 팝업이 떠 있는 시간
 const TOAST_SLIDE_MS = 300;  // 올라오고 내려가는 시간
 
@@ -129,7 +135,7 @@ function showToast(title, body, target) {
 function createTray() {
   try {
     tray = new Tray(appIcon());
-    tray.setToolTip('사랑방');
+    tray.setToolTip(APP_TITLE);
     tray.setContextMenu(Menu.buildFromTemplate([
       { label: '사랑방 열기', click: showMain },
       { label: '붙여넣은 이미지 폴더 열기', click: () => shell.openPath(pastedDir()) },
@@ -146,7 +152,8 @@ function setup() {
   nativeTheme.themeSource = loadTheme();
   app.setAppUserModelId('kr.sarangbang.client');
   createTray();
-  mainWindow = createWindow({}, { title: '사랑방' });
+  mainWindow = createWindow({}, { title: APP_TITLE });
+  mainWindow.on('page-title-updated', (e) => { if (PROFILE) e.preventDefault(); }); // 어느 창인지 구분되게 제목 유지
 
   // 창을 닫으면 종료하지 않고 트레이로 들어간다. 완전히 끄려면 트레이 메뉴의 '종료'.
   let hintShown = false;

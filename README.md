@@ -23,6 +23,8 @@
 
 `client\start-client.bat` 를 더블클릭합니다. 서버 주소·닉네임·비밀번호를 넣고 처음이면 "새로 가입"을 누릅니다.
 
+**혼자 시험하기:** 한 PC에서 `start-client.bat` 과 `start-client-2.bat` 을 둘 다 실행하면 클라이언트가 두 개 뜹니다. 서로 다른 닉네임으로 가입해 대화·초대·파일 전송을 시험할 수 있습니다.
+
 설치 파일(.exe) 만들기: `client` 폴더에서 `npm install` 후 `npm run dist` → `client\dist` 에 생성됩니다.
 
 ## 테스트
