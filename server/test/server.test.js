@@ -1,7 +1,8 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
-import { mkdtempSync, readFileSync, readdirSync, existsSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, existsSync, writeFileSync, rmSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import WebSocket from 'ws';
@@ -307,4 +308,45 @@ test('닉네임 변경: 모두에게 알리고, 지난 메시지·구성원 목�
   const d = await client();
   assert.equal((await d.req('register', { nick: '옛이름', password: 'pass1234' })).user.nick, '옛이름');
   await Promise.all([a.close(), b.close(), c.close(), d.close()]);
+});
+
+test('클라이언트 업데이트: 등록된 설치 파일을 로그인한 사람에게 알리고 같은 포트에서 내려 준다', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sb-upd-'));
+  const srv = startServer({ port: 0, host: '127.0.0.1', updatesDir: dir });
+  await srv.ready;
+  const base = `http://127.0.0.1:${srv.port}`;
+  const open = async () => { const ws = new WebSocket(`ws://127.0.0.1:${srv.port}`); await new Promise((r) => ws.once('open', r)); let id = 1; const wait = new Map(); const events = [];
+    ws.on('message', (d, bin) => { if (bin) return; const m = JSON.parse(d.toString()); if (wait.has(m.id)) wait.get(m.id)(m); else events.push(m); });
+    return { ws, events, req: (t, body = {}) => new Promise((res) => { const n = id++; wait.set(n, res); ws.send(JSON.stringify({ t, id: n, ...body })); }) }; };
+
+  const a = await open();
+  const first = await a.req('register', { nick: '업데이트', password: 'pass1234', client: { version: '0.9.0', platform: 'win32' } });
+  assert.equal(first.clientUpdate, null, '등록 전에는 업데이트 정보가 없어야 함');
+  assert.deepEqual(srv.status().connections.map((c) => [c.nick, c.version, c.platform]), [['업데이트', '0.9.0', 'win32']]);
+  assert.equal((await fetch(`${base}/update/client?token=${first.token}`)).status, 404);
+
+  const installer = randomBytes(300_000);
+  const sha256 = createHash('sha256').update(installer).digest('hex');
+  writeFileSync(join(dir, 'client-win.exe'), installer);
+  writeFileSync(join(dir, 'client-win.json'), JSON.stringify({ version: '1.2.3', name: 'Sarangbang Setup 1.2.3.exe', sha256 }));
+  assert.equal(srv.announceUpdate().version, '1.2.3');
+  await new Promise((r) => setTimeout(r, 100));
+  assert.deepEqual(a.events.find((e) => e.t === 'update.available').update, { version: '1.2.3', name: 'Sarangbang Setup 1.2.3.exe', size: 300_000, sha256, platform: 'win32' });
+
+  const b = await open();
+  assert.equal((await b.req('login', { nick: '업데이트', password: 'pass1234' })).clientUpdate.version, '1.2.3');
+  assert.equal((await fetch(`${base}/update/client`)).status, 401, '로그인 없이 받을 수 없어야 함');
+  assert.equal((await fetch(`${base}/update/client?token=wrong`)).status, 401);
+  const res = await fetch(`${base}/update/client?token=${first.token}`);
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('content-length'), '300000');
+  assert.ok(Buffer.from(await res.arrayBuffer()).equals(installer), '받은 파일이 등록한 파일과 같아야 함');
+  const root = await fetch(`${base}/`);
+  assert.equal(root.status, 426);
+  assert.match(await root.text(), /사랑방 서버입니다/);
+
+  rmSync(join(dir, 'client-win.json'));
+  assert.equal(srv.announceUpdate(), null);
+  a.ws.close(); b.ws.close();
+  await srv.close();
 });

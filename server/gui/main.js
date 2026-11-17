@@ -1,6 +1,7 @@
 // 사랑방 서버 화면(GUI): 시작/중지, 설정, 접속 주소, 접속자, 실시간 기록을 창으로 보여 준다.
 // 서버 본체(src/server.js)를 이 프로그램 안에서 그대로 돌린다.
-import { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, nativeTheme, shell, clipboard } from 'electron';
+import { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, nativeTheme, shell, clipboard, dialog } from 'electron';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -30,6 +31,42 @@ function dataDir() {
 const logsDir = () => path.join(dataDir(), 'logs');
 const settingsPath = () => path.join(dataDir(), 'server-settings.json');
 
+// ---------- 클라이언트 업데이트 파일(설치 파일) 등록 ----------
+const updatesDir = () => path.join(dataDir(), 'updates');
+const VERSION_RE = /^\d+(\.\d+){1,3}$/;
+function currentUpdate() {
+  try {
+    const meta = JSON.parse(fs.readFileSync(path.join(updatesDir(), 'client-win.json'), 'utf8'));
+    const st = fs.statSync(path.join(updatesDir(), 'client-win.exe'));
+    return VERSION_RE.test(String(meta.version)) ? { version: String(meta.version), name: String(meta.name || ''), size: st.size, at: meta.at || st.mtimeMs } : null;
+  } catch { return null; }
+}
+const guessVersion = (name) => /(\d+\.\d+(?:\.\d+){0,2})/.exec(name)?.[1] || '';
+function sha256Of(file) {
+  return new Promise((resolve, reject) => {
+    const hash = createHash('sha256');
+    fs.createReadStream(file).on('data', (d) => hash.update(d)).on('end', () => resolve(hash.digest('hex'))).on('error', reject);
+  });
+}
+async function registerUpdate({ path: source, version }) {
+  version = String(version || '').trim();
+  if (!VERSION_RE.test(version)) throw new Error('버전은 0.11.0 처럼 숫자와 점으로 적어 주세요.');
+  const st = fs.statSync(String(source));
+  if (!st.isFile() || st.size < 1) throw new Error('설치 파일을 읽을 수 없습니다.');
+  fs.mkdirSync(updatesDir(), { recursive: true });
+  const target = path.join(updatesDir(), 'client-win.exe');
+  await fs.promises.copyFile(String(source), target);
+  const meta = { version, name: path.basename(String(source)), size: st.size, sha256: await sha256Of(target), at: Date.now() };
+  fs.writeFileSync(path.join(updatesDir(), 'client-win.json'), JSON.stringify(meta, null, 2));
+  if (server) server.announceUpdate(); else note('업데이트 등록', { 버전: version, 크기: st.size, 참고: '서버를 시작하면 접속자에게 알립니다' });
+  return currentUpdate();
+}
+function clearUpdate() {
+  for (const name of ['client-win.json', 'client-win.exe']) { try { fs.unlinkSync(path.join(updatesDir(), name)); } catch { /* 없으면 넘어감 */ } }
+  if (server) server.announceUpdate();
+  return null;
+}
+
 function cleanSettings(input) {
   const s = { ...DEFAULTS, ...(input && typeof input === 'object' ? input : {}) };
   const int = (v, min, max, fallback) => (Number.isInteger(Number(v)) && Number(v) >= min && Number(v) <= max ? Number(v) : fallback);
@@ -55,7 +92,7 @@ function addresses() {
 
 function publicState() {
   return {
-    ...state, settings, addresses: addresses(), dataDir: dataDir(), logsDir: logsDir(),
+    ...state, settings, addresses: addresses(), dataDir: dataDir(), logsDir: logsDir(), clientUpdate: currentUpdate(),
     version: VERSION, uptimeFrom: state.startedAt,
   };
 }
@@ -78,6 +115,7 @@ async function startSrv() {
     s = startServer({
       port: settings.port, dbPath: path.join(dataDir(), 'sarangbang.db'), serverPassword: settings.serverPassword, retentionDays: settings.retentionDays,
       log: { enabled: settings.log, dir: logsDir(), days: settings.logDays, echo: false, sink: onLog },
+      updatesDir: updatesDir(),
     });
     await s.ready;
     server = s;
@@ -170,6 +208,14 @@ async function setup() {
     pushState();
     return { state: publicState(), restarted: wasRunning && needRestart };
   });
+  ipcMain.handle('update:pick', async () => {
+    const r = await dialog.showOpenDialog(win, { title: '새 클라이언트 설치 파일 고르기', properties: ['openFile'], filters: [{ name: '설치 파일', extensions: ['exe'] }, { name: '모든 파일', extensions: ['*'] }] });
+    if (r.canceled || !r.filePaths[0]) return null;
+    const file = r.filePaths[0];
+    return { path: file, name: path.basename(file), size: fs.statSync(file).size, version: guessVersion(path.basename(file)) };
+  });
+  ipcMain.handle('update:register', async (_e, input) => { const u = await registerUpdate(input || {}); pushState(); return u; });
+  ipcMain.handle('update:clear', () => { clearUpdate(); pushState(); return null; });
   ipcMain.handle('log:recent', () => recent);
   ipcMain.handle('log:dates', () => logDates());
   ipcMain.handle('log:read', (_e, date) => readLog(date));

@@ -19,6 +19,7 @@ const server = startServer({
   serverPassword: process.env.SERVER_PASSWORD || '',
   retentionDays: Number(process.env.RETENTION_DAYS) || 0,
   log: { enabled: logOn, dir: logDir, days: logDays },
+  updatesDir: resolve(dirname(dbPath), 'updates'),
 });
 
 server.ready.then(() => {

@@ -24,6 +24,7 @@ const state = {
   outgoing: new Map(),      // 보내는 중인 전송
   fileBoxes: new Map(),     // 메시지 ID -> 파일 표시 상자
   reconnectTimer: null, loggedIn: false,
+  app: { version: '0', platform: '', packaged: false }, update: null, updateDismissed: null,
   stats: { p2p: 0, relay: 0 },  // 받은 파일 수(전송 방식별)
 };
 
@@ -79,6 +80,7 @@ function request(t, body = {}) {
   return new Promise((resolve, reject) => {
     if (!state.ws || state.ws.readyState !== 1) return reject(new Error('서버와 연결되어 있지 않습니다.'));
     const id = state.nextId++;
+    if (t === 'login' || t === 'register') body = { ...body, client: { version: state.app.version, platform: state.app.platform } }; // 서버가 누가 구버전인지 알 수 있게
     state.pending.set(id, { resolve, reject });
     state.ws.send(JSON.stringify({ t, id, ...body }));
   });
@@ -105,6 +107,46 @@ async function reconnect() {
   } catch (e) {
     if (e.code === 'bad_token') return logout();
     state.reconnectTimer = setTimeout(reconnect, 3000);
+  }
+}
+
+// ---------------- 업데이트: 서버에 등록된 새 버전을 서버에서 직접 받아 설치 ----------------
+function cmpVersion(a, b) {
+  const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number);
+  for (let i = 0; i < Math.max(x.length, y.length); i++) { const d = (x[i] || 0) - (y[i] || 0); if (d) return d; }
+  return 0;
+}
+
+function checkUpdate(update) {
+  const newer = update && cmpVersion(update.version, state.app.version) > 0 ? update : null;
+  state.update = newer;
+  const show = !!newer && state.updateDismissed !== newer.version;
+  $('updateBar').hidden = !show;
+  if (!show) return;
+  const windows = state.app.platform === 'win32';
+  $('updateText').textContent = `새 버전 ${newer.version} 이 있습니다. (지금 ${state.app.version})${windows ? '' : ' 윈도우용 설치 파일만 제공됩니다.'}`;
+  $('btnUpdate').hidden = !windows;
+  $('btnUpdate').disabled = false;
+  $('btnUpdate').textContent = '지금 업데이트';
+}
+
+async function doUpdate() {
+  const u = state.update;
+  if (!u) return;
+  $('btnUpdate').disabled = true;
+  $('btnUpdateLater').hidden = true;
+  try {
+    const base = localStorage.getItem('sb.url').replace(/^ws/i, 'http'); // ws://주소 → http://주소 (같은 포트)
+    $('updateText').textContent = `새 버전 ${u.version} 을 서버에서 받는 중… 0%`;
+    await window.api.downloadUpdate({ url: `${base}/update/client?token=${encodeURIComponent(localStorage.getItem('sb.token'))}`, sha256: u.sha256, name: u.name });
+    $('updateText').textContent = '설치 프로그램을 엽니다. 이 프로그램은 잠시 후 닫힙니다…';
+    const r = await window.api.runUpdate();
+    if (r.skipped) $('updateText').textContent = `새 버전 ${u.version} 설치 파일을 받았습니다.`;
+  } catch (e) {
+    $('updateText').textContent = `업데이트 실패: ${String(e.message || e).replace(/^Error invoking remote method '[^']+': (Error: )?/, '')}`;
+    $('btnUpdate').disabled = false;
+    $('btnUpdate').textContent = '다시 시도';
+    $('btnUpdateLater').hidden = false;
   }
 }
 
@@ -207,6 +249,7 @@ async function enter(session) {
   $('app').hidden = false;
   $('banner').hidden = true;
   $('meNick').textContent = state.me.nick;
+  if (!DM_MODE) checkUpdate(session.clientUpdate);
 
   if (DM_MODE) {
     await openView({ type: 'dm', id: Number(params.get('dm')), nick: params.get('nick') });
@@ -262,6 +305,7 @@ function onJson(m) {
   }
   if (DM_MODE) return; // 아래는 주 창에서만 처리
   switch (m.t) {
+    case 'update.available': return checkUpdate(m.update);
     case 'room.update':
       state.rooms.set(m.room.id, m.room);
       renderSidebar();
@@ -933,6 +977,9 @@ function wire() {
   $('btnReplyCancel').onclick = () => setReply(null);
   $('btnNoticeClear').onclick = clearNotices;
   $('btnServer').onclick = $('btnBannerServer').onclick = askServer;
+  $('btnUpdate').onclick = doUpdate;
+  $('btnUpdateLater').onclick = () => { state.updateDismissed = state.update?.version; $('updateBar').hidden = true; }; // 다음에 프로그램을 켜면 다시 안내
+  window.api.onUpdateProgress(({ received, total }) => { if (state.update && $('btnUpdate').disabled) $('updateText').textContent = `새 버전 ${state.update.version} 을 서버에서 받는 중… ${total ? Math.floor((received / total) * 100) : 0}% (${fmtSize(received)}${total ? ` / ${fmtSize(total)}` : ''})`; });
   $('btnRename').onclick = () => ask({
     title: '닉네임 변경', okLabel: '변경',
     body: el('p', { className: 'note' }, '지난 메시지와 구성원 목록에도 새 이름으로 보입니다. 로그인할 때도 새 닉네임을 씁니다. (공백과 @ 없이 2~20자)'),
@@ -993,6 +1040,7 @@ function wire() {
 }
 
 async function start() {
+  state.app = await window.api.appInfo();
   wire();
   if (DM_MODE) document.body.classList.add('dm');
   const url = localStorage.getItem('sb.url');
