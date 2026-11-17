@@ -1,4 +1,7 @@
 // 사랑방 서버: WebSocket 프로토콜 처리
+import { createServer } from 'node:http';
+import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs';
+import { join } from 'node:path';
 import { WebSocketServer } from 'ws';
 import { openDb, hashPassword, verifyPassword, newToken, dmKey } from './db.js';
 import { createLogger } from './logger.js';
@@ -41,10 +44,13 @@ class ChatError extends Error {
 }
 const fail = (code, message) => { throw new ChatError(code, message); };
 
-export function startServer({ port = 7070, host = '0.0.0.0', dbPath = ':memory:', serverPassword = '', retentionDays = 0, log = {} } = {}) {
+export function startServer({ port = 7070, host = '0.0.0.0', dbPath = ':memory:', serverPassword = '', retentionDays = 0, log = {}, updatesDir = null } = {}) {
   const db = openDb(dbPath);
   const logger = createLogger(log);
-  const wss = new WebSocketServer({ port, host, maxPayload: MAX_CHUNK + 1024 });
+  // 채팅(WebSocket)과 클라이언트 업데이트 파일 내려받기(HTTP)를 같은 포트에서 받는다
+  const httpServer = createServer((req, res) => handleHttp(req, res));
+  const wss = new WebSocketServer({ server: httpServer, maxPayload: MAX_CHUNK + 1024 });
+  httpServer.listen(port, host);
   const online = new Map();    // userId -> Set<conn>
   const transfers = new Map(); // transferId -> { receiver, sender, offered, rejected, timer }
   let nextTransferId = 1;
@@ -120,7 +126,7 @@ export function startServer({ port = 7070, host = '0.0.0.0', dbPath = ':memory:'
 
   function sessionPayload(user, token) {
     const rooms = q('SELECT room_id FROM members WHERE user_id = ?').all(user.id).map((r) => roomView(r.room_id));
-    return { user: { id: user.id, nick: user.nick }, token, rooms, invites: invitesFor(user.id), notices: noticesFor(user.id) };
+    return { user: { id: user.id, nick: user.nick }, token, rooms, invites: invitesFor(user.id), notices: noticesFor(user.id), clientUpdate: updateInfo() };
   }
 
   function endTransfer(id, notify, reason) {
@@ -131,9 +137,38 @@ export function startServer({ port = 7070, host = '0.0.0.0', dbPath = ':memory:'
     for (const c of notify) if (c) send(c, { t: 'file.fail', transferId: id, reason });
   }
 
+  // ---------- 클라이언트 업데이트: 서버 PC에 등록해 둔 새 설치 파일을 접속자에게 알리고 내려 준다 ----------
+  // updatesDir 안의 client-win.json = { version, name, size, sha256 }, client-win.exe = 설치 파일
+  function readUpdate() {
+    if (!updatesDir) return null;
+    try {
+      const meta = JSON.parse(readFileSync(join(updatesDir, 'client-win.json'), 'utf8'));
+      const file = join(updatesDir, 'client-win.exe');
+      if (!/^\d+(\.\d+){1,3}$/.test(String(meta.version)) || !existsSync(file)) return null;
+      return { version: String(meta.version), name: String(meta.name || 'Sarangbang-Setup.exe').replace(/[^\w.\- ()가-힣]/g, '_').slice(0, 120), size: statSync(file).size, sha256: String(meta.sha256 || ''), platform: 'win32', file };
+    } catch { return null; }
+  }
+  const updateInfo = () => { const u = readUpdate(); return u ? { version: u.version, name: u.name, size: u.size, sha256: u.sha256, platform: u.platform } : null; };
+  const noteClient = (conn, m) => { conn.clientVersion = typeof m.client?.version === 'string' ? m.client.version.slice(0, 20) : undefined; conn.clientPlatform = typeof m.client?.platform === 'string' ? m.client.platform.slice(0, 20) : undefined; };
+
+  function handleHttp(req, res) {
+    const url = new URL(req.url, 'http://localhost');
+    const plain = (code, text) => { res.writeHead(code, { 'Content-Type': 'text/plain; charset=utf-8' }); res.end(text); };
+    if (req.method !== 'GET' || url.pathname !== '/update/client') return plain(426, '사랑방 서버입니다. 사랑방 클라이언트 프로그램으로 접속해 주세요.');
+    const session = q('SELECT user_id FROM sessions WHERE token = ?').get(String(url.searchParams.get('token') || ''));
+    const ip = (req.socket.remoteAddress || '?').replace(/^::ffff:/, '');
+    if (!session) { logger.log('요청 실패', { ip, 요청: '업데이트 받기', 사유: 'auth' }); return plain(401, '로그인한 클라이언트만 받을 수 있습니다.'); }
+    const u = readUpdate();
+    if (!u) return plain(404, '등록된 업데이트가 없습니다.');
+    logger.log('업데이트 받기', { ip, 닉네임: userById(session.user_id)?.nick, 버전: u.version, 크기: u.size });
+    res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': u.size, 'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(u.name)}` });
+    createReadStream(u.file).on('error', () => res.destroy()).pipe(res);
+  }
+
   // ---------- 요청 처리 ----------
   const handlers = {
     register(conn, m) {
+      noteClient(conn, m);
       if (serverPassword && m.serverPassword !== serverPassword) fail('bad_server_password', '서버 접속 암호가 틀렸습니다.');
       const nick = String(m.nick || '').trim();
       if (!/^[^\s@]{2,20}$/u.test(nick)) fail('bad_nick', '닉네임은 공백과 @ 없이 2~20자여야 합니다.');
@@ -148,6 +183,7 @@ export function startServer({ port = 7070, host = '0.0.0.0', dbPath = ':memory:'
     },
 
     login(conn, m) {
+      noteClient(conn, m);
       let user, token = m.token;
       if (token) {
         const s = q('SELECT user_id FROM sessions WHERE token = ?').get(String(token));
@@ -397,8 +433,8 @@ export function startServer({ port = 7070, host = '0.0.0.0', dbPath = ':memory:'
   const roomLabel = (id) => { const r = q('SELECT name FROM rooms WHERE id = ?').get(id); return r ? `${r.name}(#${id})` : `#${id}`; };
   const who = (conn) => ({ ip: conn.ip, 닉네임: conn.user?.nick });
   const LOGGED = {
-    register: (c) => ['가입', who(c)],
-    login: (c, m) => ['로그인 성공', { ...who(c), 방식: m.token ? '자동 로그인' : '비밀번호' }],
+    register: (c) => ['가입', { ...who(c), 버전: c.clientVersion }],
+    login: (c, m) => ['로그인 성공', { ...who(c), 방식: m.token ? '자동 로그인' : '비밀번호', 버전: c.clientVersion }],
     'user.rename': (c, m, r) => ['닉네임 변경', { ...who(c), 이전: r.before }],
     'room.create': (c, m, r) => ['방 생성', { ...who(c), 방: roomLabel(r.room.id), 공개: r.room.isPublic ? '예' : '아니오' }],
     'room.join': (c, m) => ['방 입장', { ...who(c), 방: roomLabel(m.roomId) }],
@@ -478,14 +514,18 @@ export function startServer({ port = 7070, host = '0.0.0.0', dbPath = ':memory:'
     sweeper.unref();
   }
 
-  const ready = new Promise((resolve, reject) => { wss.once('listening', () => { logger.log('서버 시작', { 포트: wss.address().port }); resolve(); }); wss.once('error', reject); });
+  const ready = new Promise((resolve, reject) => { httpServer.once('listening', () => { logger.log('서버 시작', { 포트: httpServer.address().port }); resolve(); }); httpServer.once('error', reject); });
+  wss.on('error', () => {}); // 시작 실패는 위에서 알린다
   return {
     ready,
-    get port() { return wss.address().port; },
+    get port() { return httpServer.address().port; },
+    updateInfo,
+    // 새 설치 파일을 등록(또는 해제)한 뒤 호출: 접속 중인 클라이언트에게 바로 알린다
+    announceUpdate() { const update = updateInfo(); sendAll({ t: 'update.available', update }); logger.log(update ? '업데이트 등록' : '업데이트 해제', update ? { 버전: update.version, 크기: update.size } : {}); return update; },
     // 서버 화면용 현황: 지금 접속한 사람과 전체 개수
     status() {
       const connections = [];
-      for (const set of online.values()) for (const c of set) connections.push({ ip: c.ip, nick: c.user.nick, since: c.since });
+      for (const set of online.values()) for (const c of set) connections.push({ ip: c.ip, nick: c.user.nick, since: c.since, version: c.clientVersion || null, platform: c.clientPlatform || null });
       const count = (table) => q(`SELECT COUNT(*) AS n FROM ${table}`).get().n;
       return { connections, waiting: wss.clients.size - connections.length, users: count('users'), rooms: count('rooms'), messages: count('messages') };
     },
@@ -495,7 +535,12 @@ export function startServer({ port = 7070, host = '0.0.0.0', dbPath = ':memory:'
       logger.close();
       for (const tr of transfers.values()) clearTimeout(tr.timer);
       for (const c of wss.clients) c.terminate();
-      return new Promise((resolve) => wss.close(() => { db.close(); resolve(); }));
+      return new Promise((resolve) => {
+        wss.close(() => {});
+        httpServer.closeAllConnections?.();
+        if (!httpServer.listening) { try { db.close(); } catch { /* 이미 닫힘 */ } return resolve(); }
+        httpServer.close(() => { try { db.close(); } catch { /* 이미 닫힘 */ } resolve(); });
+      });
     },
   };
 }

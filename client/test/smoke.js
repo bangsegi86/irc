@@ -11,7 +11,9 @@ const URL = process.env.SB_URL || 'ws://127.0.0.1:7171';
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-smoke-'));
 app.setPath('userData', path.join(tmp, 'user'));
 app.setPath('downloads', path.join(tmp, 'downloads'));
-process.env.SARANGBANG_DATA = path.join(tmp, 'data'); // 점검 중 만든 이미지가 실제 프로그램 폴더에 쌓이지 않게
+process.env.SARANGBANG_DATA = path.join(tmp, 'data');
+process.env.SARANGBANG_NO_RUN = '1';        // 업데이트 점검 때 설치 프로그램을 실제로 실행하지 않는다
+process.env.SARANGBANG_PLATFORM = 'win32'; // 윈도우용 업데이트 안내를 점검한다 // 점검 중 만든 이미지가 실제 프로그램 폴더에 쌓이지 않게
 const shots = process.env.SB_SHOTS || tmp;
 
 const step = (name) => { if (process.env.SB_VERBOSE) console.log(`STEP ${name}`); };
@@ -68,6 +70,23 @@ async function run() {
   step('1');
   await js(win, `fUrl.value=${JSON.stringify(URL)}; fNick.value=${JSON.stringify(myNick)}; fPass.value='pass1234'; btnRegister.click()`);
   await until(() => js(win, `!document.getElementById('app').hidden`), '가입 후 채팅 화면');
+
+  // 1-2. 업데이트: 서버에 새 버전이 등록되어 있으면 안내가 뜨고, 서버에서 받아 온다
+  step('1-2');
+  if (process.env.SB_SERVER_DATA) {
+    const cur = await js(win, `state.app.version`);
+    assert.equal(cur, require('../package.json').version);
+    await until(() => js(win, `!updateBar.hidden && updateText.textContent.includes('새 버전 99.0.0') && updateText.textContent.includes('지금 ${cur}') && !btnUpdate.hidden`), '새 버전 안내');
+    await shot(win, 'update.png');
+    await js(win, `btnUpdate.click()`);
+    await until(() => js(win, `updateText.textContent === '새 버전 99.0.0 설치 파일을 받았습니다.'`), '서버에서 내려받기 완료');
+    const got = fs.readFileSync(path.join(tmp, 'user', 'updates', 'Sarangbang Setup 99.0.0.exe'));
+    assert.ok(got.equals(fs.readFileSync(path.join(process.env.SB_SERVER_DATA, 'updates', 'client-win.exe'))), '받은 설치 파일이 서버의 것과 같아야 함');
+    // 받은 파일이 손상된 경우(해시 불일치)에는 실행하지 않고 알린다
+    assert.match(await js(win, `window.api.downloadUpdate({ url: localStorage.getItem('sb.url').replace(/^ws/, 'http') + '/update/client?token=' + localStorage.getItem('sb.token'), sha256: '00', name: 'x.exe' }).then(() => 'ok', (e) => e.message)`), /손상/);
+    await js(win, `btnUpdateLater.hidden = false; btnUpdateLater.click()`);
+    await until(() => js(win, `updateBar.hidden`), '나중에');
+  }
 
   // 2. 방 만들기
   step('2');

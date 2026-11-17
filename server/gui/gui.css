@@ -109,6 +109,10 @@ label.check { display: flex; align-items: center; gap: 6px; color: var(--dim); f
 
 /* 설정 */
 .form { max-width: 640px; margin-bottom: 16px; }
+.updBox { margin: 12px 0; padding: 12px 14px; border: 1px dashed var(--line); border-radius: 10px; }
+.updBox b { font-size: 18px; }
+.tag { font-size: 11px; font-weight: 700; border-radius: 9px; padding: 1px 8px; background: var(--bad-bg); color: var(--bad); border: 1px solid var(--bad); margin-left: 6px; }
+.tag.ok { background: var(--accent-soft); color: var(--text); border-color: var(--accent); }
 .form h2:first-child { margin-top: 0; }
 .form label { display: flex; flex-direction: column; gap: 4px; margin-bottom: 14px; font-weight: 700; }
 .form label small { font-size: 12px; }
