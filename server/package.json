@@ -1,6 +1,6 @@
 {
   "name": "sarangbang-server",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "description": "사랑방 채팅 서버",
   "type": "module",
   "private": true,
@@ -27,13 +27,15 @@
     "files": [
       "src/**/*",
       "gui/**/*",
+      "assets/**/*",
       "package.json"
     ],
     "win": {
       "target": [
         "nsis",
         "portable"
-      ]
+      ],
+      "icon": "assets/icon.ico"
     },
     "nsis": {
       "oneClick": false,
