@@ -121,3 +121,6 @@ label.check { display: flex; align-items: center; gap: 6px; color: var(--dim); f
 .form label.switch input { width: 18px; height: 18px; margin-top: 3px; accent-color: var(--accent); flex-shrink: 0; }
 .form label.switch span { display: flex; flex-direction: column; }
 .form select { width: 220px; }
+
+/* 프로그램 표지: 아이콘 그림을 쓴다 */
+.logo { background: url(../assets/icon.png) center / cover no-repeat; border-radius: 0; }

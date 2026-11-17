@@ -367,6 +367,7 @@ function clearNotices() {
 }
 
 function renderSidebar() {
+  window.api.setBadge(state.notices.length); // 확인하지 않은 호출이 있으면 트레이·작업 표시줄 아이콘에 빨간 점
   $('meAvatar').replaceChildren(avatar(state.me, 32));
   $('noticeCount').hidden = $('btnNoticeClear').hidden = !state.notices.length;
   $('noticeCount').textContent = String(state.notices.length);

@@ -74,15 +74,18 @@ async function registerFile(filePath) {
   return { fileId, name, size: st.size, mime: mimeOf(name) };
 }
 
-// 아이콘 파일 없이 쓰는 기본 아이콘(파란 원)
-function appIcon() {
-  const size = 32, buf = Buffer.alloc(size * size * 4);
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      if (Math.hypot(x - 15.5, y - 15.5) <= 14) buf.set([0xf5, 0x9c, 0x5b, 0xff], (y * size + x) * 4); // BGRA
-    }
+// 아이콘: 하늘색 바탕의 ㅅ(사랑방). 서버 프로그램은 짙은 회색 바탕이라 작업 표시줄·트레이에서 구분된다.
+const asset = (name) => path.join(__dirname, 'assets', name);
+const appIcon = () => nativeImage.createFromPath(asset('icon.png'));
+let alertCount = 0; // 아직 확인하지 않은 호출 수 → 트레이·작업 표시줄에 빨간 점
+function refreshBadge() {
+  if (tray) {
+    tray.setImage(nativeImage.createFromPath(asset(alertCount ? 'tray-alert.png' : 'tray.png')));
+    tray.setToolTip(alertCount ? `${APP_TITLE} — 새 호출 ${alertCount}건` : APP_TITLE);
   }
-  return nativeImage.createFromBitmap(buf, { width: size, height: size });
+  if (process.platform === 'win32' && mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.setOverlayIcon(alertCount ? nativeImage.createFromPath(asset('overlay-alert.png')) : null, alertCount ? `새 호출 ${alertCount}건` : '');
+  }
 }
 
 function createWindow(query, opts) {
@@ -136,7 +139,7 @@ function showToast(title, body, target) {
 
 function createTray() {
   try {
-    tray = new Tray(appIcon());
+    tray = new Tray(nativeImage.createFromPath(asset('tray.png')));
     tray.setToolTip(APP_TITLE);
     tray.setContextMenu(Menu.buildFromTemplate([
       { label: '사랑방 열기', click: showMain },
@@ -167,6 +170,7 @@ function setup() {
   });
   mainWindow.on('closed', () => { mainWindow = null; app.quit(); });
 
+  ipcMain.handle('badge:set', (_e, count) => { alertCount = Math.max(0, Number(count) || 0); refreshBadge(); return alertCount; });
   ipcMain.handle('dm:open', (_e, peerId, nick) => openDm(Number(peerId), String(nick)));
 
   // 1:1 메시지가 왔을 때: 그 창을 보고 있지 않으면 팝업. 1:1 창이 열려 있는지 돌려준다.
